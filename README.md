@@ -64,6 +64,35 @@ cd /path/to/your-project
 python skill_scheduler.py --task "health check" --max-skill-reads 3 --format text
 ```
 
+## 與 my-agent-skills 的配套方式
+
+`my-agent-bootstrap` 需要搭配 `my-agent-skills` 一起使用，但一般情況**不需要手動 clone 兩個 repo**。
+
+建議流程：
+
+1. 先 clone `my-agent-bootstrap`
+2. 對你的目標專案執行：
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/your-project --force
+```
+
+`bootstrap_agent.sh` 會自動處理：
+
+- 在目標專案掛上 `my-agent-skills` submodule（預設來源：`https://github.com/Alanlee0323/my-agent-skills.git`）
+- 同步 `AGENTS.md`、scheduler 與測試檔
+- 執行健康檢查
+
+前提條件：
+
+- 目標專案必須是 Git repo
+- 你必須對 `my-agent-skills` repo 有讀取權限
+
+例外情況：
+
+- 若你手動加上 `--skip-submodule`，腳本會跳過 submodule 安裝/更新
+- 若 submodule 操作失敗，腳本會顯示警告，需手動檢查權限或網路設定
+
 ## 強制路由條件（摘要）
 
 符合以下任一條件時，必須先執行：

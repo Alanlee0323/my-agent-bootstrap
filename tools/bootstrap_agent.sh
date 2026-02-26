@@ -21,6 +21,7 @@ Options:
   --force                   Overwrite existing target files
   --skip-submodule          Skip submodule add/update
   --skip-healthcheck        Skip scheduler health check
+  --skip-gitnexus           Skip GitNexus analyze step
   --dry-run                 Print actions without applying changes
   -h, --help                Show this help
 
@@ -85,12 +86,18 @@ setup_submodule() {
     return
   fi
 
+  local skills_abs="${TARGET_DIR}/${SKILLS_PATH}"
   if ! ensure_git_repo; then
-    warn "Target is not a git repo. Skip submodule setup."
+    warn "Target is not a git repo. Falling back to git clone."
+    if [[ -d "${skills_abs}" || -f "${skills_abs}/.git" || -f "${skills_abs}" ]]; then
+      log "Skills path already exists. Skip clone."
+      return
+    fi
+    run git clone "${SKILLS_URL}" "${skills_abs}" || \
+      warn "git clone failed. Please inspect manually."
     return
   fi
 
-  local skills_abs="${TARGET_DIR}/${SKILLS_PATH}"
   if [[ -d "${skills_abs}" || -f "${skills_abs}/.git" || -f "${skills_abs}" ]]; then
     log "my-agent-skills path exists. Running submodule update."
   else
@@ -100,6 +107,53 @@ setup_submodule() {
 
   run git -C "${TARGET_DIR}" submodule update --init --recursive "${SKILLS_PATH}" || \
     warn "Submodule update failed. Please inspect manually."
+}
+
+setup_gitnexus() {
+  if [[ "${SKIP_GITNEXUS}" == "1" ]]; then
+    log "Skip GitNexus setup by request."
+    return
+  fi
+  if ! ensure_git_repo; then
+    warn "Target is not a git repo. Skip GitNexus analyze."
+    return
+  fi
+  if ! command -v npx >/dev/null 2>&1; then
+    warn "npx not found. Skip GitNexus analyze. Install Node.js to enable."
+    return
+  fi
+  log "Running GitNexus analyze on target repo."
+  run npx gitnexus analyze "${TARGET_DIR}" || \
+    warn "GitNexus analyze failed. Please inspect manually."
+}
+
+setup_git_exclude() {
+  ensure_git_repo || return
+  local exclude_file="${TARGET_DIR}/.git/info/exclude"
+  local exclude_dir="${TARGET_DIR}/.git/info"
+  [[ -d "${exclude_dir}" ]] || mkdir -p "${exclude_dir}"
+  local marker="# Bootstrap agent tools"
+  if grep -qF "${marker}" "${exclude_file}" 2>/dev/null; then
+    log "Git exclude entries already present. Skip."
+    return
+  fi
+  log "Writing agent paths to .git/info/exclude."
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "+ append to ${exclude_file}"
+    return
+  fi
+  cat >> "${exclude_file}" <<'EXCLUDE'
+
+# Bootstrap agent tools
+AGENTS.md
+CLAUDE.md
+skill_scheduler.py
+services/skill_scheduler.py
+tests/test_skill_scheduler.py
+my-agent-skills/
+skills/
+.gitnexus/
+EXCLUDE
 }
 
 resolve_python_cmd() {
@@ -150,6 +204,7 @@ FORCE="0"
 SKIP_SUBMODULE="0"
 SKIP_HEALTHCHECK="0"
 DRY_RUN="0"
+SKIP_GITNEXUS="0"
 PYTHON_CMD=""
 COPIED_FILES=()
 SKIPPED_FILES=()
@@ -192,6 +247,10 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN="1"
       shift
       ;;
+    --skip-gitnexus)
+      SKIP_GITNEXUS="1"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -220,7 +279,9 @@ copy_template_file "skill_scheduler.py"
 copy_template_file "services/skill_scheduler.py"
 copy_template_file "tests/test_skill_scheduler.py"
 
+setup_gitnexus
 run_health_check
+setup_git_exclude
 
 log "Bootstrap complete."
 if [[ ${#COPIED_FILES[@]} -gt 0 ]]; then

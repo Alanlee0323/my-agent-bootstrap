@@ -1,301 +1,229 @@
 # my-agent-bootstrap
 
-> Plug-and-play routing layer that turns any AI coding agent (Codex, Copilot CLI, Claude Code) into a skill-aware assistant — in one command.
+Use this tool when you want one `my-agent-skills` repository to drive different AI agents (Codex, Copilot CLI, Gemini CLI) in a consistent, repeatable way.
 
-## What This Does
+## Start Here (New User)
 
-`my-agent-bootstrap` is a **zero-config bootstrap kit** that wires up:
+If you are seeing this project for the first time, use this order:
 
-| Capability | Description |
-|---|---|
-| **AGENTS.md Routing Policy** | Conditional routing gate — the agent must consult the skill scheduler before complex tasks |
-| **Dual-Layer Skill Architecture** | `./skills/` (project-local) overrides `./my-agent-skills/` (global), first-seen-wins dedup |
-| **Skill Scheduler** | Two-phase retrieval (Discover/Filter → Targeted Read) with context guardrail |
-| **Semantic Bridging** | `--context` parameter lets the agent pass its understanding of fuzzy user intent |
-| **Confidence Visualization** | ASCII progress bars, layer labels, signal breakdown, and prompt improvement tips |
-| **Environment Diagnostics** | `--status` mode checks git, GitNexus, git exclude, overrides, and fallback skills |
-| **GitNexus Knowledge Graph** | Auto-indexes your codebase into a knowledge graph for deeper code understanding |
-| **Team Repo Isolation** | Agent tooling auto-excluded from git tracking via `.git/info/exclude` |
+1. Bootstrap your project once.
+2. Choose `--profile` mode (recommended) or `--bundle` mode (quick test).
+3. Run scheduler once to verify skills are loaded.
+4. Start using your AI agent with generated `.agent` artifacts.
 
-## Quick Start
+## What Problem This Solves
 
-### Prerequisites
+Without this tool, each AI CLI needs different prompt/config formats.  
+With this tool:
 
-- Python 3.10+
-- Git
-- (Optional) Node.js — required for GitNexus knowledge graph
+1. `my-agent-skills` is your single source of truth.
+2. `agent-bootstrap` translates that into agent-specific outputs.
+3. You avoid manually maintaining 3 different prompt files.
 
-### Step 1 — Clone this repo
+## Two Repos, Two Responsibilities
 
-```bash
-git clone https://github.com/Alanlee0323/my-agent-bootstrap.git
+1. `my-agent-skills` stores content:
+- `skills/<domain>/<skill>/SKILL.md` (`domain` = `shared` / `engineer` / `finance` / `meta`)
+- `bundles/<bundle>.yaml`
+- `policies/base.yaml`
+- `profiles/*.yaml`
+
+2. `agent-bootstrap` stores integration logic:
+- bootstrap scripts
+- scheduler (`skill_scheduler.py`)
+- bundle/profile compiler
+- adapter templates (`codex`, `copilot`, `gemini`)
+
+These repos are versioned independently.
+
+## Quick Setup
+
+Windows:
+
+```bat
+tools\bootstrap_agent.bat --target C:\path\to\your-project --force
 ```
 
-### Step 2 — Run bootstrap on your project
+Linux/macOS:
 
-**Linux / macOS:**
 ```bash
-cd my-agent-bootstrap
 chmod +x tools/bootstrap_agent.sh
 tools/bootstrap_agent.sh --target /path/to/your-project --force
 ```
 
-**Windows:**
-```bat
-cd my-agent-bootstrap
-tools\bootstrap_agent.bat --target C:\path\to\your-project --force
+## Ready-to-Copy Examples
+
+You can copy these files directly:
+
+1. `agent-bootstrap/examples/agent.profile.engineer-codex.yaml`
+2. `agent-bootstrap/examples/agent.profile.finance-all.yaml`
+3. `agent-bootstrap/examples/bundle.template.yaml` (place it under `my-agent-skills/bundles/<name>.yaml`)
+
+What this does:
+
+1. Mounts or clones `my-agent-skills` into your target project.
+2. Copies scheduler/routing files.
+3. Runs health check.
+4. Optionally runs GitNexus.
+
+## Mode Selection: `--profile` vs `--bundle`
+
+### Use `--profile` when you want repeatable team behavior
+
+`--profile` means: "Apply a saved configuration file."
+
+Example profile (`agent.profile.yaml`):
+
+```yaml
+name: engineer-codex
+bundle: engineer
+agent: codex
+skills_repo: my-agent-skills
+adapter_output: .agent
+max_skill_reads: 3
+generate_launchers: true
 ```
 
-That's it. The bootstrap script automatically:
-
-1. **Mounts `my-agent-skills`** as a git submodule (or `git clone` for non-git targets)
-2. **Copies routing files** — `AGENTS.md`, scheduler engine, and tests
-3. **Runs GitNexus analyze** — builds a codebase knowledge graph (git repos only)
-4. **Runs a health check** — verifies skill loading and routing
-5. **Writes `.git/info/exclude`** — prevents agent tooling from polluting your shared repo
-
-### Step 3 — Verify
+Run:
 
 ```bash
-cd /path/to/your-project
-python skill_scheduler.py --status
+tools/bootstrap_agent.sh --target /path/to/project --profile agent.profile.yaml
 ```
 
-Expected output:
-```
-Environment diagnostics
-- git repo: ✓ yes
-- GitNexus index (.gitnexus/): ✓ present
-- git exclude marker: ✓ present
+Why use this:
 
-Skill layers
-- /path/to/your-project/skills: 0 skill(s)
-- /path/to/your-project/my-agent-skills: 13 skill(s)
+1. Same result every time.
+2. Easy to audit in git.
+3. Best for team/onboarding.
 
-Fallback skills
-- planning-implementation: ✓ found
-- planning: ✓ found
-- managing-environment: ✓ found
-```
+### Use `--bundle` when you want quick compile without creating profile file
 
-### Step 4 — (Optional) Add project-local skill overrides
+`--bundle` means: "Choose one role package from `my-agent-skills/bundles/*.yaml`."
+
+Example:
 
 ```bash
-mkdir -p skills/cicd-skills
-cat > skills/cicd-skills/SKILL.md << 'EOF'
----
-name: managing-cicd-workflow
-description: Project-specific CI/CD for my-app
----
-# Inherits from ./my-agent-skills/cicd-skills/SKILL.md
-
-## When to use this skill
-- deploy_my_app_staging
-- run smoke tests on port 8080
-EOF
+tools/bootstrap_agent.sh --target /path/to/project --bundle engineer --agent codex
 ```
 
-## How It Works
+What `--bundle engineer` does:
+
+1. Loads `my-agent-skills/bundles/engineer.yaml`.
+2. Reads listed skill IDs.
+3. Compiles agent-specific prompt artifacts for the selected `--agent`.
+
+## What Each Key Parameter Means (User Perspective)
+
+| Parameter | Why You Provide It | What Happens |
+|---|---|---|
+| `--target` | Tell tool where your project is | Files are installed into that project |
+| `--profile` | Reuse a saved setup | Bundle/agent/output come from profile |
+| `--bundle` | Pick a role package quickly | Compiler uses that bundle YAML |
+| `--agent` | Select target AI CLI | Generates codex/copilot/gemini outputs |
+| `--adapter-output` | Choose where generated files go | `.agent` artifacts are written there |
+| `--max-skill-reads` | Control routing context budget | Scheduler read guardrail is enforced |
+
+Notes:
+
+1. `--profile` and `--bundle` cannot be used together in the same run.
+2. `--agent all` generates outputs for all supported CLIs.
+
+## End-to-End Flow (What Each Step Is Doing)
 
 ```mermaid
 flowchart TD
-    A[User task input] --> B{Mandatory routing<br/>condition met?}
-    B -->|Yes| C["skill_scheduler.py<br/>--task + --context"]
-    B -->|No| D[Agent answers directly]
-
-    C --> E["Discover: scan ./skills/ → ./my-agent-skills/"]
-    E --> F["Filter: build index — dedup by identifier<br/>(project-local wins)"]
-    F --> G["Targeted Read: load full SKILL.md<br/>for top candidates only"]
-    G --> H{Over max-skill-reads?}
-
-    H -->|No| I["Rank by confidence %<br/>with signal breakdown"]
-    H -->|Yes| J["Guardrail warning<br/>+ deferred candidates"]
-    J --> I
-
-    I --> K["Output: ASCII bars + layer tags<br/>+ prompt tips"]
-    K --> L["Plan → Domain → Review"]
+    A[You choose mode<br/>profile or bundle] --> B[bootstrap script runs]
+    B --> C[Load canonical rules<br/>from my-agent-skills]
+    C --> D[Compile to agent-specific outputs<br/>codex/copilot/gemini]
+    D --> E[Write .agent artifacts<br/>prompt + IR + manifest]
+    E --> F[Agent runs task]
+    F --> G[scheduler routes skills<br/>Discover -> Filter -> Targeted Read]
+    G --> H[Task executes with guardrails<br/>whitelist + retry + path contract]
 ```
 
-## Directory Layout
+## Generated Files You Will See
 
-After bootstrap, your project looks like this:
-
-```
-your-project/
-├─ skills/                        ← Project-local overrides (you create, optional)
-│  └─ cicd-skills/
-│     └─ SKILL.md                 ← Overrides the global cicd-skills
-├─ my-agent-skills/               ← Global skill library (auto-mounted by bootstrap)
-│  ├─ cicd-skills/
-│  ├─ planning/
-│  ├─ ...
-│  └─ global-rules.md
-├─ .gitnexus/                     ← Knowledge graph index (auto-excluded from git)
-├─ AGENTS.md                      ← Routing policy + GitNexus context (appended)
-├─ CLAUDE.md                      ← Claude Code context (generated by GitNexus)
-├─ skill_scheduler.py             ← CLI entry point
-├─ services/
-│  └─ skill_scheduler.py          ← Core routing engine
-└─ tests/
-   └─ test_skill_scheduler.py     ← 10 tests covering all features
+```text
+<project>/.agent/
+  codex/<bundle>/AGENTS.generated.md
+  copilot/<bundle>/copilot.prompt.md
+  gemini/<bundle>/gemini.prompt.md
+  <adapter>/<bundle>/ir.json
+  <adapter>/<bundle>/manifest.json
+  launchers/launch_<adapter>.bat
+  launchers/launch_<adapter>.sh
+  profile.manifest.json
 ```
 
-## Dual-Layer Skill Architecture
+## Verify It Works
 
-| Layer | Directory | Purpose | Examples |
-|---|---|---|---|
-| **Project-Local** | `./skills/` | Project-specific overrides & unique skills | IP allowlists, job names, hardware mappings |
-| **Global** | `./my-agent-skills/` | Cross-project workflows & guardrails | Trunk-based CI/CD, planning, code review |
-
-### Override Rules
-
-1. Scheduler scans `./skills/` first, then `./my-agent-skills/`.
-2. **Same-identifier dedup**: first loaded wins → project-local always overrides global.
-3. When `./skills/` is absent, the global layer is used in full.
-4. Overrides are **tracked** — the load report shows which global skills were replaced.
-
-### Writing a Project Override
-
-- Set `name` in frontmatter to match the global skill's identifier exactly.
-- Write only the differences (IPs, env names, job IDs). Reference the global skill for shared logic.
-- Add a note at the top: `# Inherits from ./my-agent-skills/<skill>/SKILL.md`
-
-## Scheduler CLI Reference
-
-### Routing a task
+Status check:
 
 ```bash
-python skill_scheduler.py --task "deploy to production" --context "user wants CI/CD pipeline for staging" --max-skill-reads 3
+python skill_scheduler.py --status --format text
 ```
 
-Sample output:
-```
-Skill preload summary
-- total skills: 13
-- route hints: 13
-- max detailed reads: 3
-- ./skills: 1 skill file(s)
-- ./my-agent-skills: 13 skill file(s)
-- overrides:
-  - managing-cicd-workflow (global skipped)
-- detailed reads used: 3/3
-
-Scheduled skills
-1. managing-cicd-workflow [project-local]  ████████████░░░░░░░░ 62%
-   signals: ✓ alias | ✓ keyword | ✓ global-rule | ✓ trigger
-2. handling-review [global]  ████░░░░░░░░░░░░░░░░ 19%
-   signals: ✓ global-rule
-```
-
-### Environment diagnostics
+Task check:
 
 ```bash
-python skill_scheduler.py --status
+python skill_scheduler.py --task "plan refactor" --context "planning-implementation" --format json
 ```
 
-Checks: git repo presence, `.gitnexus/` index, `.git/info/exclude` marker, skill layer scan results, override list, and fallback skill validation.
-
-### Full parameter reference
-
-| Parameter | Description | Default |
-|---|---|---|
-| `--task` | Task description to route | `""` (summary only) |
-| `--context` | Agent's semantic understanding of user intent (improves fuzzy matching) | `""` |
-| `--top` | Max skill suggestions to return | `5` |
-| `--max-skill-reads` | Full-content read limit per schedule (Context Guardrail) | `3` |
-| `--format` | Output format: `text` or `json` | `text` |
-| `--status` | Show environment diagnostics instead of routing | `false` |
-
-### AGENTS.md Routing Hook
-
-When the agent encounters a complex task (code generation, CI/CD, multi-step planning), `AGENTS.md` mandates:
+Whitelist check:
 
 ```bash
-python skill_scheduler.py --task "<task description>" --context "<agent's understanding>" --max-skill-reads 3
+python skill_scheduler.py \
+  --task "plan refactor" \
+  --context "planning-implementation" \
+  --intent-whitelist "planning-implementation,handling-review" \
+  --format json
 ```
 
-The agent uses the output (confidence %, layer, signals) to decide which skills to load and in what order.
+## How To Add A New Skill (Practical Workflow)
 
-## GitNexus Integration
-
-[GitNexus](https://github.com/abhigyanpatwari/GitNexus) indexes your codebase into a knowledge graph — dependencies, call chains, clusters, and execution flows — then exposes it through the agent context.
-
-### How it works
-
-1. Bootstrap copies `AGENTS.md` first (Commander Policy)
-2. `npx gitnexus analyze` **appends** knowledge graph context to `AGENTS.md` inside `<!-- gitnexus:start/end -->` markers
-3. Re-running bootstrap only updates the marked section — your routing policy is never overwritten
-
-### Requirements
-
-- Target must be a git repo (auto-skipped otherwise)
-- Node.js must be installed (`npx` available)
-- First run downloads the GitNexus npm package automatically
-
-### Skip GitNexus
-
-```bash
-tools/bootstrap_agent.sh --target /path/to/project --skip-gitnexus
+```mermaid
+flowchart TD
+    A[Create skill file<br/>my-agent-skills/skills/<domain>/<skill>/SKILL.md] --> B[Add skill ID to bundle]
+    B --> C[Optional: update profile file]
+    C --> D[Re-run bootstrap with profile or bundle]
+    D --> E[Run scheduler verification]
+    E --> F[Optional: create project-local override]
 ```
 
-## Team Repo Isolation
+Step-by-step:
 
-Bootstrap writes agent tool paths to `.git/info/exclude` — a local-only gitignore that is **never committed**:
+1. Create `my-agent-skills/skills/<domain>/<new-skill>/SKILL.md`.
+2. Set stable frontmatter `name` (skill ID).
+3. Add skill ID into one or more `bundles/*.yaml`.
+4. If needed, update `profiles/*.yaml`.
+5. Re-apply in target project via `--profile` or `--bundle`.
+6. Verify with scheduler commands.
 
-```
-# Bootstrap agent tools
-AGENTS.md
-CLAUDE.md
-skill_scheduler.py
-services/skill_scheduler.py
-tests/test_skill_scheduler.py
-my-agent-skills/
-skills/
-.gitnexus/
-```
+If you need project-specific behavior:
 
-- **Idempotent**: re-running bootstrap does not duplicate entries
-- **Git repos only**: non-git targets skip this step automatically
-- **No `.gitignore` pollution**: uses `.git/info/exclude` so teammates are unaffected
-
-## Bootstrap Script Options
-
-| Flag | Description |
-|---|---|
-| `--target <dir>` | Target project directory (default: current directory) |
-| `--source-root <dir>` | Source template root (default: parent of bootstrap script) |
-| `--skills-url <url>` | Git URL for `my-agent-skills` repo |
-| `--skills-path <path>` | Submodule path in target (default: `my-agent-skills`) |
-| `--max-skill-reads <n>` | Guardrail value for health check (default: `3`) |
-| `--force` | Overwrite existing target files |
-| `--skip-submodule` | Skip submodule/clone of `my-agent-skills` |
-| `--skip-gitnexus` | Skip GitNexus analyze step |
-| `--skip-healthcheck` | Skip post-bootstrap health check |
-| `--dry-run` | Print actions without applying changes |
+1. Create local override in target project: `skills/<skill>/SKILL.md`.
+2. Keep the same frontmatter `name` as global skill.
+3. Put only project-specific differences.
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `0 skill file(s)` after bootstrap | `my-agent-skills` not cloned | Check git access, re-run without `--skip-submodule` |
-| GitNexus step skipped | Not a git repo, or Node.js not installed | Run `git init` first, or install Node.js |
-| Fallback skill `⚠ missing` in `--status` | Skill renamed or not present in global layer | Verify `my-agent-skills/` contains the expected skill directories |
-| `context guardrail triggered` warning | More candidates than `max-skill-reads` allows | Increase `--max-skill-reads` or make your `--task` description more specific |
-| Override not taking effect | `name` in frontmatter doesn't match global identifier | Ensure `name:` in project-local SKILL.md matches exactly |
+1. `Bundle not found`  
+Check `my-agent-skills/bundles/<bundle>.yaml`.
 
-## FAQ
+2. `missing skill`  
+Bundle references a skill ID that is not present in any `SKILL.md` frontmatter `name`.
 
-**Q: Do I need to clone `my-agent-skills` separately?**
-No. Bootstrap handles it automatically via git submodule (or `git clone` for non-git targets).
+3. `invalid_intent`  
+`--context` missing or not in `--intent-whitelist`.
 
-**Q: Will this pollute my team's shared repo?**
-No. All agent files are excluded via `.git/info/exclude` (local-only, never committed).
+4. `0 skill(s)`  
+`my-agent-skills` not mounted in target project. Re-run bootstrap without `--skip-submodule`.
 
-**Q: Can I use this without GitNexus?**
-Yes. Pass `--skip-gitnexus` or simply don't have Node.js installed — the step is auto-skipped.
+5. `profile apply failed`  
+Check profile path, YAML format, and `skills_repo` path.
 
-**Q: What if `./skills/` doesn't exist?**
-That's fine. The global layer works standalone. Create `./skills/` only when you need project-specific overrides.
+## Traditional Chinese Guide
 
-**Q: Which AI agents does this support?**
-Any agent that reads `AGENTS.md` — including OpenAI Codex, GitHub Copilot CLI, and Claude Code.
+See:
+
+- `USAGE_ZH_TW.md`

@@ -6,7 +6,11 @@ for %%I in ("%SCRIPT_DIR%..") do set "SOURCE_ROOT=%%~fI"
 set "TARGET_DIR=%CD%"
 set "SKILLS_URL=https://github.com/Alanlee0323/my-agent-skills.git"
 set "SKILLS_PATH=my-agent-skills"
+set "PROFILE_PATH="
 set "MAX_SKILL_READS=3"
+set "AGENT_TARGET=codex"
+set "BUNDLE_NAME="
+set "ADAPTER_OUTPUT=.agent"
 set "FORCE=0"
 set "SKIP_SUBMODULE=0"
 set "SKIP_HEALTHCHECK=0"
@@ -42,8 +46,32 @@ if /I "%~1"=="--skills-path" (
   shift
   goto parse_args
 )
+if /I "%~1"=="--profile" (
+  set "PROFILE_PATH=%~2"
+  shift
+  shift
+  goto parse_args
+)
 if /I "%~1"=="--max-skill-reads" (
   set "MAX_SKILL_READS=%~2"
+  shift
+  shift
+  goto parse_args
+)
+if /I "%~1"=="--bundle" (
+  set "BUNDLE_NAME=%~2"
+  shift
+  shift
+  goto parse_args
+)
+if /I "%~1"=="--agent" (
+  set "AGENT_TARGET=%~2"
+  shift
+  shift
+  goto parse_args
+)
+if /I "%~1"=="--adapter-output" (
+  set "ADAPTER_OUTPUT=%~2"
   shift
   shift
   goto parse_args
@@ -84,16 +112,27 @@ if not exist "%SOURCE_ROOT%" call :die Source root not found: %SOURCE_ROOT%
 call :is_integer "%MAX_SKILL_READS%"
 if errorlevel 1 call :die --max-skill-reads must be an integer
 if %MAX_SKILL_READS% LSS 1 set "MAX_SKILL_READS=1"
+if defined PROFILE_PATH if defined BUNDLE_NAME call :die Use either --profile or --bundle/--agent options, not both.
+if /I not "%AGENT_TARGET%"=="codex" if /I not "%AGENT_TARGET%"=="copilot" if /I not "%AGENT_TARGET%"=="gemini" if /I not "%AGENT_TARGET%"=="all" (
+  call :die --agent must be one of: codex^|copilot^|gemini^|all
+)
 
 call :log Target: %TARGET_DIR%
 call :log Source root: %SOURCE_ROOT%
 call :log Guardrail max-skill-reads: %MAX_SKILL_READS%
+if defined PROFILE_PATH call :log Profile mode enabled: profile=%PROFILE_PATH%
+if defined BUNDLE_NAME call :log Bundle compile enabled: bundle=%BUNDLE_NAME%, agent=%AGENT_TARGET%, output=%ADAPTER_OUTPUT%
 
 call :setup_submodule
 call :copy_template_file AGENTS.md
 call :copy_template_file skill_scheduler.py
 call :copy_template_file services\skill_scheduler.py
 call :copy_template_file tests\test_skill_scheduler.py
+if defined PROFILE_PATH (
+  call :run_profile_apply
+) else (
+  call :run_adapter_compile
+)
 call :setup_gitnexus
 call :run_health_check
 call :setup_git_exclude
@@ -101,11 +140,15 @@ call :setup_git_exclude
 call :log Bootstrap complete.
 if defined COPIED_FILES (
   call :log Copied files:
-  for %%F in (!COPIED_FILES:;= !) do echo   - %%F
+  set "COPIED_LIST=!COPIED_FILES!"
+  set "COPIED_LIST=!COPIED_LIST:;= !"
+  for %%F in (!COPIED_LIST!) do echo   - %%F
 )
 if defined SKIPPED_FILES (
   call :warn Skipped existing files:
-  for %%F in (!SKIPPED_FILES:;= !) do >&2 echo   - %%F
+  set "SKIPPED_LIST=!SKIPPED_FILES!"
+  set "SKIPPED_LIST=!SKIPPED_LIST:;= !"
+  for %%F in (!SKIPPED_LIST!) do >&2 echo   - %%F
 )
 exit /b 0
 
@@ -119,7 +162,11 @@ echo   --source-root ^<dir^>       Source template root ^(default: parent of thi
 echo   --skills-url ^<url^>        my-agent-skills git URL
 echo                             ^(default: https://github.com/Alanlee0323/my-agent-skills.git^)
 echo   --skills-path ^<path^>      Submodule path in target repo ^(default: my-agent-skills^)
+echo   --profile ^<path^>          Agent profile yaml path ^(relative to target or absolute^)
 echo   --max-skill-reads ^<n^>     Guardrail value used for health check ^(default: 3^)
+echo   --bundle ^<name^>           Bundle name from my-agent-skills\bundles\^<name^>.yaml
+echo   --agent ^<name^>            Adapter target: codex^|copilot^|gemini^|all ^(default: codex^)
+echo   --adapter-output ^<path^>   Output directory for compiled adapter artifacts ^(default: .agent^)
 echo   --force                   Overwrite existing target files
 echo   --skip-submodule          Skip submodule add/update
 echo   --skip-healthcheck        Skip scheduler health check
@@ -131,6 +178,8 @@ echo Examples:
 echo   tools\bootstrap_agent.bat --target C:\path\to\project
 echo   tools\bootstrap_agent.bat --target . --force
 echo   tools\bootstrap_agent.bat --target . --dry-run
+echo   tools\bootstrap_agent.bat --target . --bundle engineer --agent codex
+echo   tools\bootstrap_agent.bat --target . --profile agent.profile.yaml
 exit /b 0
 
 :log
@@ -334,4 +383,56 @@ if "%DRY_RUN%"=="1" (
 
 %PYTHON_CMD% "%SCHEDULER%" --task "health check" --top 1 --max-skill-reads "%MAX_SKILL_READS%" --format text
 if errorlevel 1 call :warn Health check failed. Please inspect manually.
+exit /b 0
+
+:run_adapter_compile
+if not defined BUNDLE_NAME (
+  call :log No bundle specified. Skip adapter compile.
+  exit /b 0
+)
+
+call :resolve_python_cmd
+if not defined PYTHON_CMD call :die No python interpreter found; cannot compile adapter artifacts.
+
+set "COMPILER=%SOURCE_ROOT%\tools\compile_agent_bundle.py"
+if not exist "%COMPILER%" call :die Bundle compiler not found: %COMPILER%
+
+set "SKILLS_REPO=%TARGET_DIR%\%SKILLS_PATH%"
+if not exist "%SKILLS_REPO%" if not "%DRY_RUN%"=="1" call :die Skills repo path not found for compile: %SKILLS_REPO%
+if not exist "%SKILLS_REPO%" if "%DRY_RUN%"=="1" call :warn Skills repo path not found in dry-run; command will still be printed: %SKILLS_REPO%
+
+set "ADAPTER_OUTPUT_ABS=%TARGET_DIR%\%ADAPTER_OUTPUT%"
+call :log Compiling adapter artifacts ^(agent=%AGENT_TARGET%, bundle=%BUNDLE_NAME%^).
+if "%DRY_RUN%"=="1" (
+  echo + %PYTHON_CMD% "%COMPILER%" --agent "%AGENT_TARGET%" --bundle "%BUNDLE_NAME%" --skills-repo "%SKILLS_REPO%" --output "%ADAPTER_OUTPUT_ABS%" --project-root "%TARGET_DIR%" --max-skill-reads "%MAX_SKILL_READS%"
+  exit /b 0
+)
+
+%PYTHON_CMD% "%COMPILER%" --agent "%AGENT_TARGET%" --bundle "%BUNDLE_NAME%" --skills-repo "%SKILLS_REPO%" --output "%ADAPTER_OUTPUT_ABS%" --project-root "%TARGET_DIR%" --max-skill-reads "%MAX_SKILL_READS%"
+if errorlevel 1 call :die Adapter compile failed.
+exit /b 0
+
+:run_profile_apply
+if not defined PROFILE_PATH exit /b 0
+
+call :resolve_python_cmd
+if not defined PYTHON_CMD call :die No python interpreter found; cannot apply profile.
+
+set "APPLIER=%SOURCE_ROOT%\tools\apply_agent_profile.py"
+if not exist "%APPLIER%" call :die Profile applier not found: %APPLIER%
+
+set "PROFILE_ABS=%PROFILE_PATH%"
+if not exist "%PROFILE_ABS%" set "PROFILE_ABS=%TARGET_DIR%\%PROFILE_PATH%"
+if not exist "%PROFILE_ABS%" if not "%DRY_RUN%"=="1" call :die Profile file not found: %PROFILE_ABS%
+if not exist "%PROFILE_ABS%" if "%DRY_RUN%"=="1" call :warn Profile file not found in dry-run; command will still be printed: %PROFILE_ABS%
+
+set "SKILLS_REPO=%TARGET_DIR%\%SKILLS_PATH%"
+call :log Applying agent profile: %PROFILE_ABS%
+if "%DRY_RUN%"=="1" (
+  echo + %PYTHON_CMD% "%APPLIER%" --profile "%PROFILE_ABS%" --project-root "%TARGET_DIR%" --default-skills-repo "%SKILLS_REPO%" --template-root "%SOURCE_ROOT%\adapters"
+  exit /b 0
+)
+
+%PYTHON_CMD% "%APPLIER%" --profile "%PROFILE_ABS%" --project-root "%TARGET_DIR%" --default-skills-repo "%SKILLS_REPO%" --template-root "%SOURCE_ROOT%\adapters"
+if errorlevel 1 call :die Profile apply failed.
 exit /b 0

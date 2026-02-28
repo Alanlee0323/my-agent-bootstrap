@@ -1,0 +1,8 @@
+name: engineer-codex
+bundle: engineer
+agent: codex
+skills_repo: my-agent-skills
+adapter_output: .agent
+max_skill_reads: 3
+generate_launchers: true
+

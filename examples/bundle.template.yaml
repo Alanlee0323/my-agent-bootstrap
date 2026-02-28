@@ -1,0 +1,9 @@
+name: your-bundle-name
+description: Bundle for a specific role or agent scenario
+skills:
+  - planning-implementation
+  - handling-review
+policy_overrides:
+  output_language: zh-TW
+  max_skill_reads: 3
+

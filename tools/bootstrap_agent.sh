@@ -17,7 +17,11 @@ Options:
   --skills-url <url>        my-agent-skills git URL
                             (default: https://github.com/Alanlee0323/my-agent-skills.git)
   --skills-path <path>      Submodule path in target repo (default: my-agent-skills)
+  --profile <path>          Agent profile yaml path (relative to target or absolute)
   --max-skill-reads <n>     Guardrail value used for health check (default: 3)
+  --bundle <name>           Bundle name from my-agent-skills/bundles/<name>.yaml
+  --agent <name>            Adapter target: codex|copilot|gemini|all (default: codex)
+  --adapter-output <path>   Output directory for compiled adapter artifacts (default: .agent)
   --force                   Overwrite existing target files
   --skip-submodule          Skip submodule add/update
   --skip-healthcheck        Skip scheduler health check
@@ -29,6 +33,8 @@ Examples:
   tools/bootstrap_agent.sh --target /path/to/project
   tools/bootstrap_agent.sh --target . --force
   tools/bootstrap_agent.sh --target . --dry-run
+  tools/bootstrap_agent.sh --target . --bundle engineer --agent codex
+  tools/bootstrap_agent.sh --target . --profile agent.profile.yaml
 EOF
 }
 
@@ -194,12 +200,84 @@ run_health_check() {
     --format text || warn "Health check failed. Please inspect manually."
 }
 
+run_adapter_compile() {
+  if [[ -z "${BUNDLE_NAME}" ]]; then
+    log "No bundle specified. Skip adapter compile."
+    return
+  fi
+
+  resolve_python_cmd
+  if [[ -z "${PYTHON_CMD}" ]]; then
+    die "No python interpreter found; cannot compile adapter artifacts."
+  fi
+
+  local compiler="${SOURCE_ROOT}/tools/compile_agent_bundle.py"
+  [[ -f "${compiler}" ]] || die "Bundle compiler not found: ${compiler}"
+
+  local skills_repo="${TARGET_DIR}/${SKILLS_PATH}"
+  if [[ ! -d "${skills_repo}" && "${DRY_RUN}" != "1" ]]; then
+    die "Skills repo path not found for compile: ${skills_repo}"
+  fi
+  if [[ ! -d "${skills_repo}" && "${DRY_RUN}" == "1" ]]; then
+    warn "Skills repo path not found in dry-run; command will still be printed: ${skills_repo}"
+  fi
+
+  local adapter_output_abs="${TARGET_DIR}/${ADAPTER_OUTPUT}"
+  log "Compiling adapter artifacts (agent=${AGENT_TARGET}, bundle=${BUNDLE_NAME})."
+  run "${PYTHON_CMD}" "${compiler}" \
+    --agent "${AGENT_TARGET}" \
+    --bundle "${BUNDLE_NAME}" \
+    --skills-repo "${skills_repo}" \
+    --output "${adapter_output_abs}" \
+    --project-root "${TARGET_DIR}" \
+    --max-skill-reads "${MAX_SKILL_READS}" || \
+    die "Adapter compile failed."
+}
+
+run_profile_apply() {
+  if [[ -z "${PROFILE_PATH}" ]]; then
+    return
+  fi
+
+  resolve_python_cmd
+  if [[ -z "${PYTHON_CMD}" ]]; then
+    die "No python interpreter found; cannot apply profile."
+  fi
+
+  local applier="${SOURCE_ROOT}/tools/apply_agent_profile.py"
+  [[ -f "${applier}" ]] || die "Profile applier not found: ${applier}"
+
+  local profile_abs="${PROFILE_PATH}"
+  if [[ "${profile_abs}" != /* ]]; then
+    profile_abs="${TARGET_DIR}/${PROFILE_PATH}"
+  fi
+  if [[ ! -f "${profile_abs}" && "${DRY_RUN}" != "1" ]]; then
+    die "Profile file not found: ${profile_abs}"
+  fi
+  if [[ ! -f "${profile_abs}" && "${DRY_RUN}" == "1" ]]; then
+    warn "Profile file not found in dry-run; command will still be printed: ${profile_abs}"
+  fi
+
+  local skills_repo="${TARGET_DIR}/${SKILLS_PATH}"
+  log "Applying agent profile: ${profile_abs}"
+  run "${PYTHON_CMD}" "${applier}" \
+    --profile "${profile_abs}" \
+    --project-root "${TARGET_DIR}" \
+    --default-skills-repo "${skills_repo}" \
+    --template-root "${SOURCE_ROOT}/adapters" || \
+    die "Profile apply failed."
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TARGET_DIR="$(pwd)"
 SKILLS_URL="https://github.com/Alanlee0323/my-agent-skills.git"
 SKILLS_PATH="my-agent-skills"
+PROFILE_PATH=""
 MAX_SKILL_READS="3"
+AGENT_TARGET="codex"
+BUNDLE_NAME=""
+ADAPTER_OUTPUT=".agent"
 FORCE="0"
 SKIP_SUBMODULE="0"
 SKIP_HEALTHCHECK="0"
@@ -227,8 +305,24 @@ while [[ $# -gt 0 ]]; do
       SKILLS_PATH="${2:-}"
       shift 2
       ;;
+    --profile)
+      PROFILE_PATH="${2:-}"
+      shift 2
+      ;;
     --max-skill-reads)
       MAX_SKILL_READS="${2:-}"
+      shift 2
+      ;;
+    --bundle)
+      BUNDLE_NAME="${2:-}"
+      shift 2
+      ;;
+    --agent)
+      AGENT_TARGET="${2:-}"
+      shift 2
+      ;;
+    --adapter-output)
+      ADAPTER_OUTPUT="${2:-}"
       shift 2
       ;;
     --force)
@@ -267,10 +361,23 @@ done
 if [[ "${MAX_SKILL_READS}" -lt 1 ]]; then
   MAX_SKILL_READS="1"
 fi
+if [[ -n "${PROFILE_PATH}" && -n "${BUNDLE_NAME}" ]]; then
+  die "Use either --profile or --bundle/--agent options, not both."
+fi
+case "${AGENT_TARGET}" in
+  codex|copilot|gemini|all) ;;
+  *) die "--agent must be one of: codex|copilot|gemini|all" ;;
+esac
 
 log "Target: ${TARGET_DIR}"
 log "Source root: ${SOURCE_ROOT}"
 log "Guardrail max-skill-reads: ${MAX_SKILL_READS}"
+if [[ -n "${PROFILE_PATH}" ]]; then
+  log "Profile mode enabled: profile=${PROFILE_PATH}"
+fi
+if [[ -n "${BUNDLE_NAME}" ]]; then
+  log "Bundle compile enabled: bundle=${BUNDLE_NAME}, agent=${AGENT_TARGET}, output=${ADAPTER_OUTPUT}"
+fi
 
 setup_submodule
 
@@ -278,6 +385,11 @@ copy_template_file "AGENTS.md"
 copy_template_file "skill_scheduler.py"
 copy_template_file "services/skill_scheduler.py"
 copy_template_file "tests/test_skill_scheduler.py"
+if [[ -n "${PROFILE_PATH}" ]]; then
+  run_profile_apply
+else
+  run_adapter_compile
+fi
 
 setup_gitnexus
 run_health_check

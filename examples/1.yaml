@@ -1,0 +1,9 @@
+name: engineer-all
+bundle: engineer
+agent: 
+  - codex
+  - copilot
+  - gemini
+adapter_output: .agent
+max_skill_reads: 3
+generate_launchers: true

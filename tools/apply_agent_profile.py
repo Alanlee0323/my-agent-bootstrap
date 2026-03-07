@@ -187,16 +187,15 @@ def load_profile(path: Path) -> AgentProfile:
 
 
 def parse_agents(raw: dict[str, object]) -> list[str]:
-    if "agents" in raw:
-        value = raw["agents"]
-        if not isinstance(value, list):
-            raise ValueError("`agents` must be a YAML list.")
+    value = raw.get("agents") or raw.get("agent")
+    if value is None:
+        return []
+
+    if isinstance(value, list):
         return [normalize_identifier(str(item)) for item in value if str(item).strip()]
 
-    if "agent" in raw:
-        value = normalize_identifier(str(raw["agent"]))
-        return [value] if value else []
-    return []
+    text = normalize_identifier(str(value))
+    return [text] if text else []
 
 
 def resolve_profile_path(raw: str | None, base_dir: Path, fallback: Path | None) -> Path | None:
@@ -232,17 +231,17 @@ def parse_simple_yaml(path: Path) -> dict[str, object]:
             value = value.strip()
             if not value:
                 section = key
-                if key == "agents":
+                if key in ("agents", "agent"):
                     result[key] = []
                 continue
             result[key] = parse_scalar(value)
             continue
 
-        if section == "agents":
+        if section in ("agents", "agent"):
             if not stripped.startswith("- "):
-                raise ValueError("Invalid agents list item, expected '- value'.")
+                raise ValueError(f"Invalid {section} list item, expected '- value'.")
             item = parse_scalar(stripped[2:])
-            casted = result.setdefault("agents", [])
+            casted = result.setdefault(section, [])
             if isinstance(casted, list):
                 casted.append(item)
             continue

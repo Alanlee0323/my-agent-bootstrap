@@ -179,6 +179,7 @@ setup_git_exclude() {
 
 # Bootstrap agent tools
 AGENTS.md
+GEMINI.md
 CLAUDE.md
 skill_scheduler.py
 services/skill_scheduler.py
@@ -561,6 +562,7 @@ fi
 setup_submodule
 
 copy_template_file "AGENTS.md"
+copy_template_file "GEMINI.md"
 copy_template_file "skill_scheduler.py"
 copy_template_file "services/skill_scheduler.py"
 copy_template_file "tests/test_skill_scheduler.py"

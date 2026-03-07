@@ -22,6 +22,9 @@ Options:
   --bundle <name>           Bundle name from my-agent-skills/bundles/<name>.yaml
   --agent <name>            Adapter target: codex|copilot|gemini|all (default: codex)
   --adapter-output <path>   Output directory for compiled adapter artifacts (default: .agent)
+  --upgrade                 Re-apply bootstrap using previous state (forces overwrite)
+  --update-skills-remote    Update my-agent-skills to latest remote commit
+  --clean-stale             Remove stale generated files tracked by previous state
   --force                   Overwrite existing target files
   --skip-submodule          Skip submodule add/update
   --skip-healthcheck        Skip scheduler health check
@@ -35,6 +38,7 @@ Examples:
   tools/bootstrap_agent.sh --target . --dry-run
   tools/bootstrap_agent.sh --target . --bundle engineer --agent codex
   tools/bootstrap_agent.sh --target . --profile agent.profile.yaml
+  tools/bootstrap_agent.sh --target . --upgrade --update-skills-remote
 EOF
 }
 
@@ -62,6 +66,15 @@ run() {
     return 0
   fi
   "$@"
+}
+
+resolve_target_path() {
+  local value="$1"
+  if [[ "${value}" == /* ]]; then
+    printf '%s\n' "${value}"
+    return
+  fi
+  printf '%s\n' "${TARGET_DIR}/${value}"
 }
 
 copy_template_file() {
@@ -92,15 +105,24 @@ setup_submodule() {
     return
   fi
 
-  local skills_abs="${TARGET_DIR}/${SKILLS_PATH}"
+  local skills_abs
+  skills_abs="$(resolve_target_path "${SKILLS_PATH}")"
   if ! ensure_git_repo; then
     warn "Target is not a git repo. Falling back to git clone."
     if [[ -d "${skills_abs}" || -f "${skills_abs}/.git" || -f "${skills_abs}" ]]; then
       log "Skills path already exists. Skip clone."
+      if [[ "${UPDATE_SKILLS_REMOTE}" == "1" && -d "${skills_abs}/.git" ]]; then
+        log "Updating existing skills clone from remote."
+        run git -C "${skills_abs}" pull --ff-only || \
+          warn "Skills remote pull failed. Please inspect manually."
+      fi
       return
     fi
     run git clone "${SKILLS_URL}" "${skills_abs}" || \
       warn "git clone failed. Please inspect manually."
+    if [[ "${UPDATE_SKILLS_REMOTE}" == "1" ]]; then
+      log "Skills clone already at latest remote after clone."
+    fi
     return
   fi
 
@@ -113,6 +135,11 @@ setup_submodule() {
 
   run git -C "${TARGET_DIR}" submodule update --init --recursive "${SKILLS_PATH}" || \
     warn "Submodule update failed. Please inspect manually."
+  if [[ "${UPDATE_SKILLS_REMOTE}" == "1" ]]; then
+    log "Updating my-agent-skills submodule to latest remote commit."
+    run git -C "${TARGET_DIR}" submodule update --init --remote --recursive "${SKILLS_PATH}" || \
+      warn "Submodule remote update failed. Please inspect manually."
+  fi
 }
 
 setup_gitnexus() {
@@ -163,6 +190,9 @@ EXCLUDE
 }
 
 resolve_python_cmd() {
+  if [[ -n "${PYTHON_CMD}" ]]; then
+    return
+  fi
   if command -v python3 >/dev/null 2>&1; then
     PYTHON_CMD="python3"
     return
@@ -172,6 +202,48 @@ resolve_python_cmd() {
     return
   fi
   PYTHON_CMD=""
+}
+
+resolve_upgrade_mode_from_state() {
+  resolve_python_cmd
+  if [[ -z "${PYTHON_CMD}" ]]; then
+    die "No python interpreter found; cannot resolve --upgrade mode."
+  fi
+
+  local state_tool="${SOURCE_ROOT}/tools/bootstrap_state.py"
+  [[ -f "${state_tool}" ]] || die "State helper not found: ${state_tool}"
+
+  local output=""
+  if ! output="$("${PYTHON_CMD}" "${state_tool}" resolve --state "${STATE_FILE}" --discover-root "${TARGET_DIR}" 2>/dev/null)"; then
+    die "--upgrade requested but no previous bootstrap state found. Provide --profile or --bundle explicitly."
+  fi
+
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      STATE_FILE) STATE_FILE="${value}" ;;
+      MODE) ACTIVE_MODE="${value}" ;;
+      PROFILE_PATH) PROFILE_PATH="${value}" ;;
+      BUNDLE_NAME) BUNDLE_NAME="${value}" ;;
+      AGENT_TARGET) AGENT_TARGET="${value}" ;;
+      ADAPTER_OUTPUT) ADAPTER_OUTPUT="${value}" ;;
+      SKILLS_PATH) SKILLS_PATH="${value}" ;;
+      MAX_SKILL_READS) MAX_SKILL_READS="${value}" ;;
+      *) ;;
+    esac
+  done <<< "${output}"
+
+  if [[ -z "${ACTIVE_MODE}" ]]; then
+    die "Resolved state is missing mode. Provide --profile or --bundle explicitly."
+  fi
+
+  if [[ "${ACTIVE_MODE}" == "profile" && -z "${PROFILE_PATH}" ]]; then
+    die "Resolved state mode is profile, but profile path is missing."
+  fi
+  if [[ "${ACTIVE_MODE}" == "bundle" && -z "${BUNDLE_NAME}" ]]; then
+    die "Resolved state mode is bundle, but bundle name is missing."
+  fi
+
+  log "Upgrade mode restored from state: mode=${ACTIVE_MODE}, output=${ADAPTER_OUTPUT}"
 }
 
 run_health_check() {
@@ -214,7 +286,8 @@ run_adapter_compile() {
   local compiler="${SOURCE_ROOT}/tools/compile_agent_bundle.py"
   [[ -f "${compiler}" ]] || die "Bundle compiler not found: ${compiler}"
 
-  local skills_repo="${TARGET_DIR}/${SKILLS_PATH}"
+  local skills_repo
+  skills_repo="$(resolve_target_path "${SKILLS_PATH}")"
   if [[ ! -d "${skills_repo}" && "${DRY_RUN}" != "1" ]]; then
     die "Skills repo path not found for compile: ${skills_repo}"
   fi
@@ -222,7 +295,8 @@ run_adapter_compile() {
     warn "Skills repo path not found in dry-run; command will still be printed: ${skills_repo}"
   fi
 
-  local adapter_output_abs="${TARGET_DIR}/${ADAPTER_OUTPUT}"
+  local adapter_output_abs
+  adapter_output_abs="$(resolve_target_path "${ADAPTER_OUTPUT}")"
   log "Compiling adapter artifacts (agent=${AGENT_TARGET}, bundle=${BUNDLE_NAME})."
   run "${PYTHON_CMD}" "${compiler}" \
     --agent "${AGENT_TARGET}" \
@@ -232,6 +306,8 @@ run_adapter_compile() {
     --project-root "${TARGET_DIR}" \
     --max-skill-reads "${MAX_SKILL_READS}" || \
     die "Adapter compile failed."
+  COMPILE_EXECUTED="1"
+  ACTIVE_MODE="bundle"
 }
 
 run_profile_apply() {
@@ -258,7 +334,8 @@ run_profile_apply() {
     warn "Profile file not found in dry-run; command will still be printed: ${profile_abs}"
   fi
 
-  local skills_repo="${TARGET_DIR}/${SKILLS_PATH}"
+  local skills_repo
+  skills_repo="$(resolve_target_path "${SKILLS_PATH}")"
   log "Applying agent profile: ${profile_abs}"
   run "${PYTHON_CMD}" "${applier}" \
     --profile "${profile_abs}" \
@@ -266,6 +343,55 @@ run_profile_apply() {
     --default-skills-repo "${skills_repo}" \
     --template-root "${SOURCE_ROOT}/adapters" || \
     die "Profile apply failed."
+  COMPILE_EXECUTED="1"
+  ACTIVE_MODE="profile"
+}
+
+persist_bootstrap_state() {
+  if [[ "${COMPILE_EXECUTED}" != "1" ]]; then
+    return
+  fi
+
+  resolve_python_cmd
+  if [[ -z "${PYTHON_CMD}" ]]; then
+    warn "No python interpreter found. Skip bootstrap state update."
+    return
+  fi
+
+  local state_tool="${SOURCE_ROOT}/tools/bootstrap_state.py"
+  if [[ ! -f "${state_tool}" ]]; then
+    warn "State helper not found: ${state_tool}. Skip state update."
+    return
+  fi
+
+  local output_root
+  output_root="$(resolve_target_path "${ADAPTER_OUTPUT}")"
+
+  local cmd=(
+    "${PYTHON_CMD}" "${state_tool}" reconcile
+    --state "${STATE_FILE}"
+    --output-root "${output_root}"
+    --mode "${ACTIVE_MODE}"
+    --project-root "${TARGET_DIR}"
+    --adapter-output "${ADAPTER_OUTPUT}"
+    --skills-path "${SKILLS_PATH}"
+    --max-skill-reads "${MAX_SKILL_READS}"
+  )
+  if [[ -n "${PROFILE_PATH}" ]]; then
+    cmd+=(--profile-path "${PROFILE_PATH}")
+  fi
+  if [[ -n "${BUNDLE_NAME}" ]]; then
+    cmd+=(--bundle-name "${BUNDLE_NAME}")
+  fi
+  if [[ -n "${AGENT_TARGET}" ]]; then
+    cmd+=(--agent-target "${AGENT_TARGET}")
+  fi
+  if [[ "${CLEAN_STALE}" == "1" ]]; then
+    cmd+=(--clean-stale)
+  fi
+
+  log "Updating bootstrap state: ${STATE_FILE}"
+  run "${cmd[@]}" || warn "Bootstrap state update failed."
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -278,12 +404,18 @@ MAX_SKILL_READS="3"
 AGENT_TARGET="codex"
 BUNDLE_NAME=""
 ADAPTER_OUTPUT=".agent"
+UPGRADE="0"
+UPDATE_SKILLS_REMOTE="0"
+CLEAN_STALE="0"
 FORCE="0"
 SKIP_SUBMODULE="0"
 SKIP_HEALTHCHECK="0"
 DRY_RUN="0"
 SKIP_GITNEXUS="0"
 PYTHON_CMD=""
+ACTIVE_MODE=""
+STATE_FILE=""
+COMPILE_EXECUTED="0"
 COPIED_FILES=()
 SKIPPED_FILES=()
 
@@ -325,6 +457,18 @@ while [[ $# -gt 0 ]]; do
       ADAPTER_OUTPUT="${2:-}"
       shift 2
       ;;
+    --upgrade)
+      UPGRADE="1"
+      shift
+      ;;
+    --update-skills-remote)
+      UPDATE_SKILLS_REMOTE="1"
+      shift
+      ;;
+    --clean-stale)
+      CLEAN_STALE="1"
+      shift
+      ;;
     --force)
       FORCE="1"
       shift
@@ -357,21 +501,56 @@ done
 
 [[ -d "${TARGET_DIR}" ]] || die "Target directory not found: ${TARGET_DIR}"
 [[ -d "${SOURCE_ROOT}" ]] || die "Source root not found: ${SOURCE_ROOT}"
+if [[ -n "${PROFILE_PATH}" && -n "${BUNDLE_NAME}" ]]; then
+  die "Use either --profile or --bundle/--agent options, not both."
+fi
+if [[ -n "${PROFILE_PATH}" ]]; then
+  ACTIVE_MODE="profile"
+elif [[ -n "${BUNDLE_NAME}" ]]; then
+  ACTIVE_MODE="bundle"
+fi
+
+STATE_FILE="$(resolve_target_path "${ADAPTER_OUTPUT}")/bootstrap.state.json"
+if [[ "${UPGRADE}" == "1" ]]; then
+  FORCE="1"
+  if [[ "${CLEAN_STALE}" != "1" ]]; then
+    CLEAN_STALE="1"
+  fi
+  if [[ -z "${ACTIVE_MODE}" ]]; then
+    resolve_upgrade_mode_from_state
+    if [[ -n "${STATE_FILE}" && "${STATE_FILE}" != /* ]]; then
+      STATE_FILE="$(resolve_target_path "${ADAPTER_OUTPUT}")/bootstrap.state.json"
+    fi
+  fi
+fi
+
 [[ "${MAX_SKILL_READS}" =~ ^[0-9]+$ ]] || die "--max-skill-reads must be an integer"
 if [[ "${MAX_SKILL_READS}" -lt 1 ]]; then
   MAX_SKILL_READS="1"
-fi
-if [[ -n "${PROFILE_PATH}" && -n "${BUNDLE_NAME}" ]]; then
-  die "Use either --profile or --bundle/--agent options, not both."
 fi
 case "${AGENT_TARGET}" in
   codex|copilot|gemini|all) ;;
   *) die "--agent must be one of: codex|copilot|gemini|all" ;;
 esac
+if [[ "${ACTIVE_MODE}" == "profile" && -z "${PROFILE_PATH}" ]]; then
+  die "Profile mode requires --profile."
+fi
+if [[ "${ACTIVE_MODE}" == "bundle" && -z "${BUNDLE_NAME}" ]]; then
+  die "Bundle mode requires --bundle."
+fi
 
 log "Target: ${TARGET_DIR}"
 log "Source root: ${SOURCE_ROOT}"
 log "Guardrail max-skill-reads: ${MAX_SKILL_READS}"
+if [[ "${UPGRADE}" == "1" ]]; then
+  log "Upgrade mode enabled."
+fi
+if [[ "${UPDATE_SKILLS_REMOTE}" == "1" ]]; then
+  log "Skills remote update enabled."
+fi
+if [[ "${CLEAN_STALE}" == "1" ]]; then
+  log "Stale generated file cleanup enabled."
+fi
 if [[ -n "${PROFILE_PATH}" ]]; then
   log "Profile mode enabled: profile=${PROFILE_PATH}"
 fi
@@ -390,6 +569,7 @@ if [[ -n "${PROFILE_PATH}" ]]; then
 else
   run_adapter_compile
 fi
+persist_bootstrap_state
 
 setup_gitnexus
 run_health_check

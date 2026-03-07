@@ -8,8 +8,9 @@ If you are seeing this project for the first time, use this order:
 
 1. Bootstrap your project once.
 2. Choose `--profile` mode (recommended) or `--bundle` mode (quick test).
-3. Run scheduler once to verify skills are loaded.
-4. Start using your AI agent with generated `.agent` artifacts.
+3. For existing projects, re-run with `--upgrade` when tool/spec versions change.
+4. Run scheduler once to verify skills are loaded.
+5. Start using your AI agent with generated `.agent` artifacts.
 
 ## What Problem This Solves
 
@@ -49,6 +50,12 @@ Linux/macOS:
 ```bash
 chmod +x tools/bootstrap_agent.sh
 tools/bootstrap_agent.sh --target /path/to/your-project --force
+```
+
+Upgrade existing bootstrap:
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/your-project --upgrade --update-skills-remote
 ```
 
 ## Ready-to-Copy Examples
@@ -122,11 +129,34 @@ What `--bundle engineer` does:
 | `--agent` | Select target AI CLI | Generates codex/copilot/gemini outputs |
 | `--adapter-output` | Choose where generated files go | `.agent` artifacts are written there |
 | `--max-skill-reads` | Control routing context budget | Scheduler read guardrail is enforced |
+| `--upgrade` | Re-apply existing setup safely | Restores prior mode from state and forces managed-file refresh |
+| `--update-skills-remote` | Pull latest `my-agent-skills` commit | Runs remote submodule/clone update before compile |
+| `--clean-stale` | Remove no-longer-used generated artifacts | Deletes stale files tracked in previous bootstrap state |
 
 Notes:
 
 1. `--profile` and `--bundle` cannot be used together in the same run.
 2. `--agent all` generates outputs for all supported CLIs.
+3. `--upgrade` auto-enables overwrite (`--force`) and stale cleanup behavior.
+4. State is persisted at `<adapter-output>/bootstrap.state.json` for repeatable upgrades.
+
+## Upgrade Existing Projects (No Manual Delete)
+
+Use this when project was already bootstrapped and you upgraded `agent-bootstrap` or `my-agent-skills`.
+
+Profile-based project:
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade
+```
+
+Bundle-based project (explicit):
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade --bundle engineer --agent codex
+```
+
+Bundle/profile details are read from `bootstrap.state.json` when omitted.
 
 ## End-to-End Flow (What Each Step Is Doing)
 
@@ -150,9 +180,11 @@ flowchart TD
   gemini/<bundle>/gemini.prompt.md
   <adapter>/<bundle>/ir.json
   <adapter>/<bundle>/manifest.json
+  bundle.manifest.json
   launchers/launch_<adapter>.bat
   launchers/launch_<adapter>.sh
   profile.manifest.json
+  bootstrap.state.json
 ```
 
 ## Verify It Works
@@ -221,6 +253,9 @@ Bundle references a skill ID that is not present in any `SKILL.md` frontmatter `
 
 5. `profile apply failed`  
 Check profile path, YAML format, and `skills_repo` path.
+
+6. `--upgrade requested but no previous bootstrap state found`  
+Provide `--profile` or `--bundle` explicitly once, then rerun `--upgrade`.
 
 ## Traditional Chinese Guide
 

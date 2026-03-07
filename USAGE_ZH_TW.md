@@ -11,7 +11,8 @@
 
 1. 先把 bootstrap 裝進目標專案
 2. 選擇一種模式套用（建議 `--profile`）
-3. 跑 scheduler 驗證是否成功
+3. 已安裝過的專案升級時，改用 `--upgrade`
+4. 跑 scheduler 驗證是否成功
 
 ## 2. 這個工具到底在幹嘛
 
@@ -51,6 +52,12 @@ tools\bootstrap_agent.bat --target C:\path\to\your-project --force
 ```bash
 chmod +x tools/bootstrap_agent.sh
 tools/bootstrap_agent.sh --target /path/to/your-project --force
+```
+
+### 已 bootstrap 專案升級（推薦）
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/your-project --upgrade --update-skills-remote
 ```
 
 這條命令會：
@@ -132,6 +139,29 @@ tools/bootstrap_agent.sh --target /path/to/project --bundle engineer --agent cod
 | `--agent` | 告訴系統要給哪個 AI CLI 用 | 產生 codex/copilot/gemini 對應檔 |
 | `--adapter-output` | 想控制輸出目錄 | 把編譯結果寫到該路徑 |
 | `--max-skill-reads` | 想控制 scheduler 讀取上限 | 套用 guardrail，避免過量讀取 |
+| `--upgrade` | 專案已裝過，想無痛重套 | 從 state 還原上次模式並強制更新受管檔案 |
+| `--update-skills-remote` | 想同步最新 skill 包 | 先更新 `my-agent-skills` remote 再重編譯 |
+| `--clean-stale` | 想清掉過期產物 | 依上次 state 清理不再使用的 generated 檔 |
+
+補充：
+1. `--upgrade` 會自動啟用覆寫與 stale 清理。
+2. 升級狀態會寫在 `<adapter-output>/bootstrap.state.json`。
+
+## 6.1 已安裝專案升級流程（免手動刪除）
+
+若你已 bootstrap 過專案，更新 `agent-bootstrap` 後直接：
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade
+```
+
+若沒有 state 或想明確指定，也可：
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade --bundle engineer --agent codex
+```
+
+未指定 `--profile`/`--bundle` 時，會從 `bootstrap.state.json` 還原上次設定。
 
 ## 7. 產物會長什麼樣
 
@@ -142,9 +172,11 @@ tools/bootstrap_agent.sh --target /path/to/project --bundle engineer --agent cod
   gemini/<bundle>/gemini.prompt.md
   <adapter>/<bundle>/ir.json
   <adapter>/<bundle>/manifest.json
+  bundle.manifest.json
   launchers/launch_<adapter>.bat
   launchers/launch_<adapter>.sh
   profile.manifest.json
+  bootstrap.state.json
 ```
 
 ## 8. Scheduler 驗證範例
@@ -219,3 +251,6 @@ bundle 裡面引用的 skill id，找不到對應 `SKILL.md` 的 `name`。
 
 4. `0 skill(s)`  
 目標專案尚未成功掛上 `my-agent-skills`，重新跑 bootstrap（不要 `--skip-submodule`）。
+
+5. `--upgrade requested but no previous bootstrap state found`  
+先補一次明確參數（`--profile` 或 `--bundle`）執行，產生 state 後再用 `--upgrade`。

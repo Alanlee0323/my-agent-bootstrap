@@ -11,12 +11,18 @@ set "MAX_SKILL_READS=3"
 set "AGENT_TARGET=codex"
 set "BUNDLE_NAME="
 set "ADAPTER_OUTPUT=.agent"
+set "UPGRADE=0"
+set "UPDATE_SKILLS_REMOTE=0"
+set "CLEAN_STALE=0"
 set "FORCE=0"
 set "SKIP_SUBMODULE=0"
 set "SKIP_HEALTHCHECK=0"
 set "DRY_RUN=0"
 set "SKIP_GITNEXUS=0"
 set "PYTHON_CMD="
+set "ACTIVE_MODE="
+set "STATE_FILE="
+set "COMPILE_EXECUTED=0"
 set "COPIED_FILES="
 set "SKIPPED_FILES="
 
@@ -76,6 +82,21 @@ if /I "%~1"=="--adapter-output" (
   shift
   goto parse_args
 )
+if /I "%~1"=="--upgrade" (
+  set "UPGRADE=1"
+  shift
+  goto parse_args
+)
+if /I "%~1"=="--update-skills-remote" (
+  set "UPDATE_SKILLS_REMOTE=1"
+  shift
+  goto parse_args
+)
+if /I "%~1"=="--clean-stale" (
+  set "CLEAN_STALE=1"
+  shift
+  goto parse_args
+)
 if /I "%~1"=="--force" (
   set "FORCE=1"
   shift
@@ -109,30 +130,56 @@ exit /b 1
 :args_done
 if not exist "%TARGET_DIR%" call :die Target directory not found: %TARGET_DIR%
 if not exist "%SOURCE_ROOT%" call :die Source root not found: %SOURCE_ROOT%
+if defined PROFILE_PATH if defined BUNDLE_NAME call :die Use either --profile or --bundle/--agent options, not both.
+
+if defined PROFILE_PATH set "ACTIVE_MODE=profile"
+if defined BUNDLE_NAME set "ACTIVE_MODE=bundle"
+
+set "STATE_FILE=%TARGET_DIR%\%ADAPTER_OUTPUT%\bootstrap.state.json"
+
+if "%UPGRADE%"=="1" (
+  set "FORCE=1"
+  if not "%CLEAN_STALE%"=="1" set "CLEAN_STALE=1"
+  if not defined ACTIVE_MODE (
+    call :resolve_upgrade_mode_from_state
+    if errorlevel 1 exit /b 1
+  )
+)
+
 call :is_integer "%MAX_SKILL_READS%"
 if errorlevel 1 call :die --max-skill-reads must be an integer
 if %MAX_SKILL_READS% LSS 1 set "MAX_SKILL_READS=1"
-if defined PROFILE_PATH if defined BUNDLE_NAME call :die Use either --profile or --bundle/--agent options, not both.
 if /I not "%AGENT_TARGET%"=="codex" if /I not "%AGENT_TARGET%"=="copilot" if /I not "%AGENT_TARGET%"=="gemini" if /I not "%AGENT_TARGET%"=="all" (
   call :die --agent must be one of: codex^|copilot^|gemini^|all
 )
+if /I "%ACTIVE_MODE%"=="profile" if not defined PROFILE_PATH call :die Profile mode requires --profile.
+if /I "%ACTIVE_MODE%"=="bundle" if not defined BUNDLE_NAME call :die Bundle mode requires --bundle.
 
 call :log Target: %TARGET_DIR%
 call :log Source root: %SOURCE_ROOT%
 call :log Guardrail max-skill-reads: %MAX_SKILL_READS%
+if "%UPGRADE%"=="1" call :log Upgrade mode enabled.
+if "%UPDATE_SKILLS_REMOTE%"=="1" call :log Skills remote update enabled.
+if "%CLEAN_STALE%"=="1" call :log Stale generated file cleanup enabled.
 if defined PROFILE_PATH call :log Profile mode enabled: profile=%PROFILE_PATH%
 if defined BUNDLE_NAME call :log Bundle compile enabled: bundle=%BUNDLE_NAME%, agent=%AGENT_TARGET%, output=%ADAPTER_OUTPUT%
 
 call :setup_submodule
-call :copy_template_file AGENTS.md
-call :copy_template_file skill_scheduler.py
-call :copy_template_file services\skill_scheduler.py
-call :copy_template_file tests\test_skill_scheduler.py
-if defined PROFILE_PATH (
-  call :run_profile_apply
-) else (
-  call :run_adapter_compile
-)
+set "RELATIVE_PATH=AGENTS.md"
+call :copy_template_file
+set "RELATIVE_PATH=skill_scheduler.py"
+call :copy_template_file
+set "RELATIVE_PATH=services\skill_scheduler.py"
+call :copy_template_file
+set "RELATIVE_PATH=tests\test_skill_scheduler.py"
+call :copy_template_file
+if defined PROFILE_PATH goto run_profile_mode
+call :run_adapter_compile
+goto after_compile_mode
+:run_profile_mode
+call :run_profile_apply
+:after_compile_mode
+call :persist_bootstrap_state
 call :setup_gitnexus
 call :run_health_check
 call :setup_git_exclude
@@ -167,12 +214,15 @@ echo   --max-skill-reads ^<n^>     Guardrail value used for health check ^(defau
 echo   --bundle ^<name^>           Bundle name from my-agent-skills\bundles\^<name^>.yaml
 echo   --agent ^<name^>            Adapter target: codex^|copilot^|gemini^|all ^(default: codex^)
 echo   --adapter-output ^<path^>   Output directory for compiled adapter artifacts ^(default: .agent^)
-echo   --force                   Overwrite existing target files
-echo   --skip-submodule          Skip submodule add/update
-echo   --skip-healthcheck        Skip scheduler health check
-echo   --skip-gitnexus           Skip GitNexus analyze step
-echo   --dry-run                 Print actions without applying changes
-echo   -h, --help                Show this help
+echo   --upgrade                   Re-apply bootstrap using previous state ^(forces overwrite^)
+echo   --update-skills-remote      Update my-agent-skills to latest remote commit
+echo   --clean-stale               Remove stale generated files tracked by previous state
+echo   --force                     Overwrite existing target files
+echo   --skip-submodule            Skip submodule add/update
+echo   --skip-healthcheck          Skip scheduler health check
+echo   --skip-gitnexus             Skip GitNexus analyze step
+echo   --dry-run                   Print actions without applying changes
+echo   -h, --help                  Show this help
 echo.
 echo Examples:
 echo   tools\bootstrap_agent.bat --target C:\path\to\project
@@ -180,6 +230,7 @@ echo   tools\bootstrap_agent.bat --target . --force
 echo   tools\bootstrap_agent.bat --target . --dry-run
 echo   tools\bootstrap_agent.bat --target . --bundle engineer --agent codex
 echo   tools\bootstrap_agent.bat --target . --profile agent.profile.yaml
+echo   tools\bootstrap_agent.bat --target . --upgrade --update-skills-remote
 exit /b 0
 
 :log
@@ -200,18 +251,9 @@ if "%VAL%"=="" exit /b 1
 for /f "delims=0123456789" %%A in ("%VAL%") do exit /b 1
 exit /b 0
 
-:append_list
-set "LIST_NAME=%~1"
-set "LIST_VALUE=%~2"
-if defined %LIST_NAME% (
-  set "%LIST_NAME%=!%LIST_NAME%!;%LIST_VALUE%"
-) else (
-  set "%LIST_NAME%=%LIST_VALUE%"
-)
-exit /b 0
-
 :copy_template_file
-set "RELATIVE_PATH=%~1"
+if not "%~1"=="" set "RELATIVE_PATH=%~1"
+if not defined RELATIVE_PATH call :die Missing RELATIVE_PATH for copy_template_file.
 set "SRC=%SOURCE_ROOT%\%RELATIVE_PATH%"
 set "DST=%TARGET_DIR%\%RELATIVE_PATH%"
 
@@ -226,8 +268,12 @@ if not exist "%DST_DIR%" (
 )
 
 if exist "%DST%" if not "%FORCE%"=="1" (
-  call :warn Skip existing file ^(use --force to overwrite^): %DST%
-  call :append_list SKIPPED_FILES "%RELATIVE_PATH%"
+  >&2 echo [bootstrap][warn] Skip existing file ^(use --force to overwrite^): %DST%
+  if defined SKIPPED_FILES (
+    set "SKIPPED_FILES=!SKIPPED_FILES!;%RELATIVE_PATH%"
+  ) else (
+    set "SKIPPED_FILES=%RELATIVE_PATH%"
+  )
   exit /b 0
 )
 
@@ -236,7 +282,11 @@ if "%DRY_RUN%"=="1" (
 ) else (
   copy /Y "%SRC%" "%DST%" >nul || call :die Failed to copy file: %RELATIVE_PATH%
 )
-call :append_list COPIED_FILES "%RELATIVE_PATH%"
+if defined COPIED_FILES (
+  set "COPIED_FILES=!COPIED_FILES!;%RELATIVE_PATH%"
+) else (
+  set "COPIED_FILES=%RELATIVE_PATH%"
+)
 exit /b 0
 
 :setup_submodule
@@ -252,6 +302,14 @@ if errorlevel 1 (
   call :warn Target is not a git repo. Falling back to git clone.
   if exist "%SKILLS_ABS%" (
     call :log Skills path already exists. Skip clone.
+    if "%UPDATE_SKILLS_REMOTE%"=="1" if exist "%SKILLS_ABS%\.git" (
+      if "%DRY_RUN%"=="1" (
+        echo + git -C "%SKILLS_ABS%" pull --ff-only
+      ) else (
+        git -C "%SKILLS_ABS%" pull --ff-only
+        if errorlevel 1 call :warn Skills remote pull failed. Please inspect manually.
+      )
+    )
     exit /b 0
   )
   if "%DRY_RUN%"=="1" (
@@ -280,6 +338,15 @@ if "%DRY_RUN%"=="1" (
 ) else (
   git -C "%TARGET_DIR%" submodule update --init --recursive "%SKILLS_PATH%"
   if errorlevel 1 call :warn Submodule update failed. Please inspect manually.
+)
+
+if "%UPDATE_SKILLS_REMOTE%"=="1" (
+  if "%DRY_RUN%"=="1" (
+    echo + git -C "%TARGET_DIR%" submodule update --init --remote --recursive "%SKILLS_PATH%"
+  ) else (
+    git -C "%TARGET_DIR%" submodule update --init --remote --recursive "%SKILLS_PATH%"
+    if errorlevel 1 call :warn Submodule remote update failed. Please inspect manually.
+  )
 )
 exit /b 0
 
@@ -339,6 +406,7 @@ if "%DRY_RUN%"=="1" (
 exit /b 0
 
 :resolve_python_cmd
+if defined PYTHON_CMD exit /b 0
 set "PYTHON_CMD="
 where py >nul 2>&1
 if not errorlevel 1 (
@@ -355,6 +423,53 @@ if not errorlevel 1 (
   set "PYTHON_CMD=python3"
   exit /b 0
 )
+exit /b 0
+
+:resolve_upgrade_mode_from_state
+call :resolve_python_cmd
+if not defined PYTHON_CMD (
+  call :die No python interpreter found; cannot resolve --upgrade mode.
+  exit /b 1
+)
+set "STATE_TOOL=%SOURCE_ROOT%\tools\bootstrap_state.py"
+if not exist "%STATE_TOOL%" (
+  call :die State helper not found: %STATE_TOOL%
+  exit /b 1
+)
+
+set "STATE_TMP=%TEMP%\bootstrap_state_%RANDOM%_%RANDOM%.txt"
+%PYTHON_CMD% "%STATE_TOOL%" resolve --state "%STATE_FILE%" --discover-root "%TARGET_DIR%" > "%STATE_TMP%" 2>nul
+if errorlevel 1 (
+  if exist "%STATE_TMP%" del /q "%STATE_TMP%" >nul 2>&1
+  call :die --upgrade requested but no previous bootstrap state found. Provide --profile or --bundle explicitly.
+  exit /b 1
+)
+
+for /f "usebackq tokens=1,* delims==" %%A in ("%STATE_TMP%") do (
+  if /I "%%A"=="STATE_FILE" set "STATE_FILE=%%B"
+  if /I "%%A"=="MODE" set "ACTIVE_MODE=%%B"
+  if /I "%%A"=="PROFILE_PATH" set "PROFILE_PATH=%%B"
+  if /I "%%A"=="BUNDLE_NAME" set "BUNDLE_NAME=%%B"
+  if /I "%%A"=="AGENT_TARGET" set "AGENT_TARGET=%%B"
+  if /I "%%A"=="ADAPTER_OUTPUT" set "ADAPTER_OUTPUT=%%B"
+  if /I "%%A"=="SKILLS_PATH" set "SKILLS_PATH=%%B"
+  if /I "%%A"=="MAX_SKILL_READS" set "MAX_SKILL_READS=%%B"
+)
+if exist "%STATE_TMP%" del /q "%STATE_TMP%" >nul 2>&1
+
+if not defined ACTIVE_MODE (
+  call :die Resolved state is missing mode. Provide --profile or --bundle explicitly.
+  exit /b 1
+)
+if /I "%ACTIVE_MODE%"=="profile" if not defined PROFILE_PATH (
+  call :die Resolved state mode is profile, but profile path is missing.
+  exit /b 1
+)
+if /I "%ACTIVE_MODE%"=="bundle" if not defined BUNDLE_NAME (
+  call :die Resolved state mode is bundle, but bundle name is missing.
+  exit /b 1
+)
+call :log Upgrade mode restored from state: mode=%ACTIVE_MODE%, output=%ADAPTER_OUTPUT%
 exit /b 0
 
 :run_health_check
@@ -405,11 +520,15 @@ set "ADAPTER_OUTPUT_ABS=%TARGET_DIR%\%ADAPTER_OUTPUT%"
 call :log Compiling adapter artifacts ^(agent=%AGENT_TARGET%, bundle=%BUNDLE_NAME%^).
 if "%DRY_RUN%"=="1" (
   echo + %PYTHON_CMD% "%COMPILER%" --agent "%AGENT_TARGET%" --bundle "%BUNDLE_NAME%" --skills-repo "%SKILLS_REPO%" --output "%ADAPTER_OUTPUT_ABS%" --project-root "%TARGET_DIR%" --max-skill-reads "%MAX_SKILL_READS%"
+  set "COMPILE_EXECUTED=1"
+  set "ACTIVE_MODE=bundle"
   exit /b 0
 )
 
 %PYTHON_CMD% "%COMPILER%" --agent "%AGENT_TARGET%" --bundle "%BUNDLE_NAME%" --skills-repo "%SKILLS_REPO%" --output "%ADAPTER_OUTPUT_ABS%" --project-root "%TARGET_DIR%" --max-skill-reads "%MAX_SKILL_READS%"
 if errorlevel 1 call :die Adapter compile failed.
+set "COMPILE_EXECUTED=1"
+set "ACTIVE_MODE=bundle"
 exit /b 0
 
 :run_profile_apply
@@ -430,9 +549,52 @@ set "SKILLS_REPO=%TARGET_DIR%\%SKILLS_PATH%"
 call :log Applying agent profile: %PROFILE_ABS%
 if "%DRY_RUN%"=="1" (
   echo + %PYTHON_CMD% "%APPLIER%" --profile "%PROFILE_ABS%" --project-root "%TARGET_DIR%" --default-skills-repo "%SKILLS_REPO%" --template-root "%SOURCE_ROOT%\adapters"
+  set "COMPILE_EXECUTED=1"
+  set "ACTIVE_MODE=profile"
   exit /b 0
 )
 
 %PYTHON_CMD% "%APPLIER%" --profile "%PROFILE_ABS%" --project-root "%TARGET_DIR%" --default-skills-repo "%SKILLS_REPO%" --template-root "%SOURCE_ROOT%\adapters"
 if errorlevel 1 call :die Profile apply failed.
+set "COMPILE_EXECUTED=1"
+set "ACTIVE_MODE=profile"
+exit /b 0
+
+:persist_bootstrap_state
+if not "%COMPILE_EXECUTED%"=="1" exit /b 0
+
+call :resolve_python_cmd
+if not defined PYTHON_CMD (
+  call :warn No python interpreter found. Skip bootstrap state update.
+  exit /b 0
+)
+set "STATE_TOOL=%SOURCE_ROOT%\tools\bootstrap_state.py"
+if not exist "%STATE_TOOL%" (
+  call :warn State helper not found: %STATE_TOOL%. Skip state update.
+  exit /b 0
+)
+
+set "ADAPTER_OUTPUT_ABS=%TARGET_DIR%\%ADAPTER_OUTPUT%"
+if not defined STATE_FILE set "STATE_FILE=%ADAPTER_OUTPUT_ABS%\bootstrap.state.json"
+
+call :log Updating bootstrap state: %STATE_FILE%
+if "%DRY_RUN%"=="1" (
+  echo + %PYTHON_CMD% "%STATE_TOOL%" reconcile --state "%STATE_FILE%" --output-root "%ADAPTER_OUTPUT_ABS%" --mode "%ACTIVE_MODE%" --project-root "%TARGET_DIR%" --adapter-output "%ADAPTER_OUTPUT%" --skills-path "%SKILLS_PATH%" --max-skill-reads "%MAX_SKILL_READS%"
+  exit /b 0
+)
+
+if /I "%ACTIVE_MODE%"=="profile" (
+  if "%CLEAN_STALE%"=="1" (
+    %PYTHON_CMD% "%STATE_TOOL%" reconcile --state "%STATE_FILE%" --output-root "%ADAPTER_OUTPUT_ABS%" --mode "%ACTIVE_MODE%" --project-root "%TARGET_DIR%" --profile-path "%PROFILE_PATH%" --adapter-output "%ADAPTER_OUTPUT%" --skills-path "%SKILLS_PATH%" --max-skill-reads "%MAX_SKILL_READS%" --clean-stale
+  ) else (
+    %PYTHON_CMD% "%STATE_TOOL%" reconcile --state "%STATE_FILE%" --output-root "%ADAPTER_OUTPUT_ABS%" --mode "%ACTIVE_MODE%" --project-root "%TARGET_DIR%" --profile-path "%PROFILE_PATH%" --adapter-output "%ADAPTER_OUTPUT%" --skills-path "%SKILLS_PATH%" --max-skill-reads "%MAX_SKILL_READS%"
+  )
+) else (
+  if "%CLEAN_STALE%"=="1" (
+    %PYTHON_CMD% "%STATE_TOOL%" reconcile --state "%STATE_FILE%" --output-root "%ADAPTER_OUTPUT_ABS%" --mode "%ACTIVE_MODE%" --bundle-name "%BUNDLE_NAME%" --agent-target "%AGENT_TARGET%" --project-root "%TARGET_DIR%" --adapter-output "%ADAPTER_OUTPUT%" --skills-path "%SKILLS_PATH%" --max-skill-reads "%MAX_SKILL_READS%" --clean-stale
+  ) else (
+    %PYTHON_CMD% "%STATE_TOOL%" reconcile --state "%STATE_FILE%" --output-root "%ADAPTER_OUTPUT_ABS%" --mode "%ACTIVE_MODE%" --bundle-name "%BUNDLE_NAME%" --agent-target "%AGENT_TARGET%" --project-root "%TARGET_DIR%" --adapter-output "%ADAPTER_OUTPUT%" --skills-path "%SKILLS_PATH%" --max-skill-reads "%MAX_SKILL_READS%"
+  )
+)
+if errorlevel 1 call :warn Bootstrap state update failed.
 exit /b 0

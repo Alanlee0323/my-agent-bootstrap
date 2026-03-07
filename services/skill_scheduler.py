@@ -89,7 +89,6 @@ INTENT_TOKEN_ALIASES = {
         "comment",
         "審查",
         "回饋",
-        "建議",
     ),
     "evaluation": (
         "evaluate",
@@ -99,6 +98,10 @@ INTENT_TOKEN_ALIASES = {
         "評估",
         "分析結果",
         "比較實驗",
+        "模型評估",
+        "效能比較",
+        "實驗結果",
+        "比較模型",
     ),
 }
 
@@ -508,6 +511,10 @@ class SkillScheduler:
             stripped = line.strip()
             if not stripped.startswith("-"):
                 continue
+            # Only treat explicit routing lines as hints.
+            # This avoids accidentally parsing generic policy bullets.
+            if "→" not in stripped and "->" not in stripped:
+                continue
 
             refs = [ref.strip().lower() for ref in re.findall(r"`([^`]+)`", stripped)]
             if not refs:
@@ -646,7 +653,16 @@ def _tokenize(text: str) -> set[str]:
         if re.fullmatch(r"[a-z0-9\-]+", token):
             if token in STOP_WORDS or len(token) < 2:
                 continue
+            tokens.add(token)
+            continue
+
+        # Chinese text often appears without explicit separators.
+        # Add compact n-grams so routing can match phrases inside long strings.
         tokens.add(token)
+        if len(token) >= 4:
+            for size in (2, 3):
+                for index in range(0, len(token) - size + 1):
+                    tokens.add(token[index : index + size])
 
     for canonical, aliases in INTENT_TOKEN_ALIASES.items():
         for alias in aliases:

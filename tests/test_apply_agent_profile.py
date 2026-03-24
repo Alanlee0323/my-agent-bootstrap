@@ -130,8 +130,22 @@ def test_apply_profile_generates_manifest_and_launchers(tmp_path: Path) -> None:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert payload["bundle"] == "engineer"
     assert payload["agents"] == ["codex", "gemini"]
+    assert "managed_files" in payload
+    assert "codex/engineer/AGENTS.generated.md" in payload["managed_files"]
+    assert payload["input_fingerprint"]["digest"]
+    assert payload["input_fingerprint"]["version"] == 1
 
     launchers_dir = project_root / ".agent" / "launchers"
-    assert (launchers_dir / "launch_codex.bat").exists()
-    assert (launchers_dir / "launch_gemini.sh").exists()
+    codex_bat = launchers_dir / "launch_codex.bat"
+    gemini_sh = launchers_dir / "launch_gemini.sh"
+    assert codex_bat.exists()
+    assert gemini_sh.exists()
 
+    bat_text = codex_bat.read_text(encoding="utf-8")
+    sh_text = gemini_sh.read_text(encoding="utf-8")
+    assert str(project_root) not in bat_text
+    assert str(project_root) not in sh_text
+    assert "AGENT_BOOTSTRAP_ROOT" in bat_text
+    assert "AGENT_BOOTSTRAP_ROOT" in sh_text
+    assert "skill_scheduler.py" in bat_text
+    assert "skill_scheduler.py" in sh_text

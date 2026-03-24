@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 
+from bootstrap_fingerprint import detect_artifact_freshness
 from services.skill_scheduler import build_default_scheduler
 
 
@@ -99,6 +101,7 @@ def format_text_output(result: dict) -> str:
             lines.append("Fallback skills")
             for skill_id, state in fallback.items():
                 lines.append(f"- {skill_id}: {state}")
+        _append_artifact_freshness_warning(lines, result.get("artifact_freshness"))
         return "\n".join(lines)
 
     lines.extend(
@@ -162,6 +165,15 @@ def format_text_output(result: dict) -> str:
         if sample_skipped:
             lines.append(f"- sample skipped skills: {', '.join(sample_skipped)}")
 
+    artifact_freshness = result.get("artifact_freshness")
+    has_stale_artifact_warning = isinstance(artifact_freshness, dict) and bool(
+        artifact_freshness.get("is_stale")
+    )
+    if has_stale_artifact_warning and not diagnostics.get("guardrail_triggered"):
+        lines.append("")
+        lines.append("Warnings")
+    _append_artifact_freshness_warning(lines, artifact_freshness)
+
     return "\n".join(lines)
 
 
@@ -186,7 +198,7 @@ def _build_error(code: str, message: str, result: dict) -> dict:
     return payload
 
 
-def _run_status_mode(*, repo_root: Path, scheduler, load_report) -> dict:
+def _run_status_mode(*, repo_root: Path, scheduler, load_report, artifact_freshness: dict) -> dict:
     fallback_targets = (
         "planning-implementation",
         "planning",
@@ -202,23 +214,38 @@ def _run_status_mode(*, repo_root: Path, scheduler, load_report) -> dict:
         "repo_root": str(repo_root),
         "load_report": load_report.to_dict(),
         "fallback_skills": fallback_state,
+        "artifact_freshness": artifact_freshness,
     }
+
+
+def _append_artifact_freshness_warning(lines: list[str], freshness: object) -> None:
+    if not isinstance(freshness, dict):
+        return
+    if not freshness.get("is_stale"):
+        return
+    recovery_command = str(freshness.get("recovery_command", "")).strip()
+    warning = "Generated agent artifacts are stale."
+    if recovery_command:
+        warning += f" Run: {recovery_command}"
+    lines.append(f"- {warning}")
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    repo_root = Path(__file__).resolve().parent
+    repo_root = Path(os.environ.get("AGENT_BOOTSTRAP_ROOT", "")).resolve() if os.environ.get("AGENT_BOOTSTRAP_ROOT", "").strip() else Path(__file__).resolve().parent
     scheduler = build_default_scheduler(
         repo_root=repo_root,
         max_detailed_reads=max(1, args.max_skill_reads),
     )
     load_report = scheduler.load()
+    artifact_freshness = detect_artifact_freshness(repo_root)
 
     result: dict = {
         "load_report": load_report.to_dict(),
         "config": {"max_skill_reads": max(1, args.max_skill_reads)},
+        "artifact_freshness": artifact_freshness,
     }
 
     if args.status:
@@ -226,6 +253,7 @@ def main() -> int:
             repo_root=repo_root,
             scheduler=scheduler,
             load_report=load_report,
+            artifact_freshness=artifact_freshness,
         )
         if args.format == "json":
             print(json.dumps(status_result, indent=2, ensure_ascii=False))
@@ -283,4 +311,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

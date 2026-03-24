@@ -7,8 +7,8 @@ bundle_description={bundle_description}
 
 ## Runtime Contract
 
-- Project root: `{bootstrap_root}`
-- Scheduler path: `{scheduler_path}`
+- Project root token: `{bootstrap_root}`
+- Scheduler file: `{scheduler_path}`
 - Preferred language: `{output_language}`
 - Max skill reads: `{max_skill_reads}`
 
@@ -18,8 +18,9 @@ Scheduler command template:
 `{scheduler_command}`
 
 Path contract:
-- Use `AGENT_SCHEDULER_PATH` when available; otherwise use the absolute scheduler path above.
-- Never assume current working directory for scheduler execution.
+- Resolve project root from `AGENT_BOOTSTRAP_ROOT`; if unset, derive it from the current repo before running commands.
+- Use `AGENT_SCHEDULER_PATH` when available; otherwise use `{bootstrap_root}/{scheduler_path}`.
+- Never persist machine-specific absolute paths in generated prompts.
 
 ## Intent Whitelist
 
@@ -41,4 +42,3 @@ After every scheduler run:
 ## Available Skills
 
 {skills_bullets}
-

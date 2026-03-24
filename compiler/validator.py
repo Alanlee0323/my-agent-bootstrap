@@ -53,9 +53,8 @@ def validate_rendered_prompt(rendered_prompt: str, ir: CompileIR) -> list[str]:
     if "stdout" not in rendered_prompt.lower() or "stderr" not in rendered_prompt.lower():
         errors.append("Rendered prompt is missing stdout/stderr feedback-loop guidance.")
 
-    scheduler_tokens = [ir.scheduler_path, "AGENT_SCHEDULER_PATH"]
-    if not any(token in rendered_prompt for token in scheduler_tokens):
-        errors.append("Rendered prompt is missing absolute scheduler path or env fallback.")
+    scheduler_tokens = [ir.scheduler_path, "AGENT_SCHEDULER_PATH", "AGENT_BOOTSTRAP_ROOT"]
+    if not all(token in rendered_prompt for token in scheduler_tokens):
+        errors.append("Rendered prompt is missing runtime scheduler/bootstrap path contract.")
 
     return errors
-

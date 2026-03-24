@@ -4,8 +4,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
-import re
 import sys
 
 
@@ -15,6 +15,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from compiler import SUPPORTED_ADAPTERS, compile_bundle_for_agents
+from bootstrap_fingerprint import compute_input_fingerprint
+from config_utils import normalize_identifier, parse_simple_yaml
 
 
 @dataclass(frozen=True)
@@ -121,18 +123,25 @@ def main() -> int:
         )
 
     manifest_path = output_root / "profile.manifest.json"
+    input_fingerprint = compute_input_fingerprint(
+        project_root=project_root,
+        skills_repo=resolved_skills_repo,
+        profile_path=profile_path,
+    )
     manifest = {
         "profile_name": profile.name,
-        "profile_path": str(profile_path),
-        "project_root": str(project_root),
-        "skills_repo": str(resolved_skills_repo),
+        "profile_path": portable_path(profile_path, base=project_root),
+        "project_root": portable_path(project_root, base=project_root),
+        "skills_repo": portable_path(resolved_skills_repo, base=project_root),
         "bundle": profile.bundle,
         "agents": profile.agents,
-        "adapter_output": str(output_root),
+        "adapter_output": portable_path(output_root, base=project_root),
         "max_skill_reads": profile.max_skill_reads,
         "generate_launchers": profile.generate_launchers,
-        "compiled_files": [str(item) for item in written],
-        "launchers": [str(item) for item in launchers],
+        "compiled_files": [portable_path(item, base=project_root) for item in written],
+        "launchers": [portable_path(item, base=project_root) for item in launchers],
+        "managed_files": [portable_path(item, base=output_root) for item in [*written, *launchers]],
+        "input_fingerprint": input_fingerprint,
     }
     output_root.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -211,64 +220,24 @@ def resolve_profile_path(raw: str | None, base_dir: Path, fallback: Path | None)
         return candidate.resolve()
     return (base_dir / candidate).resolve()
 
-
-def parse_simple_yaml(path: Path) -> dict[str, object]:
-    result: dict[str, object] = {}
-    lines = path.read_text(encoding="utf-8").splitlines()
-
-    section = ""
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        if re.match(r"^\S", line):
-            section = ""
-            if ":" not in line:
-                raise ValueError(f"Invalid YAML line: {line!r}")
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            if not value:
-                section = key
-                if key in ("agents", "agent"):
-                    result[key] = []
-                continue
-            result[key] = parse_scalar(value)
-            continue
-
-        if section in ("agents", "agent"):
-            if not stripped.startswith("- "):
-                raise ValueError(f"Invalid {section} list item, expected '- value'.")
-            item = parse_scalar(stripped[2:])
-            casted = result.setdefault(section, [])
-            if isinstance(casted, list):
-                casted.append(item)
-            continue
-
-    return result
+def portable_path(path: Path, *, base: Path) -> str:
+    resolved_path = path.resolve()
+    resolved_base = base.resolve()
+    try:
+        relative = resolved_path.relative_to(resolved_base)
+    except ValueError:
+        return str(resolved_path)
+    if not relative.parts:
+        return "."
+    return relative.as_posix()
 
 
-def parse_scalar(value: str) -> object:
-    text = value.strip()
-    if text.startswith(("'", '"')) and text.endswith(("'", '"')) and len(text) >= 2:
-        text = text[1:-1]
-    lowered = text.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    if re.fullmatch(r"-?\d+", text):
-        return int(text)
-    return text
+def relative_path_for_shell(path: Path, *, start: Path) -> str:
+    return os.path.relpath(path, start).replace("\\", "/")
 
 
-def normalize_identifier(value: str) -> str:
-    lowered = value.strip().lower()
-    lowered = re.sub(r"\s+", "-", lowered)
-    lowered = re.sub(r"[^a-z0-9\-]", "", lowered)
-    lowered = re.sub(r"-{2,}", "-", lowered).strip("-")
-    return lowered
+def relative_path_for_bat(path: Path, *, start: Path) -> str:
+    return os.path.relpath(path, start).replace("/", "\\")
 
 
 def write_launchers(
@@ -282,14 +251,17 @@ def write_launchers(
     launcher_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
-    scheduler_path = (project_root / "skill_scheduler.py").resolve()
     for agent in agents:
         prompt_filename = {
             "codex": "AGENTS.generated.md",
             "copilot": "copilot.prompt.md",
             "gemini": "gemini.prompt.md",
         }[agent]
-        prompt_path = (output_root / agent / bundle / prompt_filename).resolve()
+        prompt_path = output_root / agent / bundle / prompt_filename
+        project_root_rel_shell = relative_path_for_shell(project_root, start=launcher_dir)
+        project_root_rel_bat = relative_path_for_bat(project_root, start=launcher_dir)
+        prompt_rel_shell = relative_path_for_shell(prompt_path, start=launcher_dir)
+        prompt_rel_bat = relative_path_for_bat(prompt_path, start=launcher_dir)
 
         sh_path = launcher_dir / f"launch_{agent}.sh"
         bat_path = launcher_dir / f"launch_{agent}.bat"
@@ -297,18 +269,16 @@ def write_launchers(
         sh_path.write_text(
             build_shell_launcher(
                 agent=agent,
-                prompt_path=prompt_path,
-                scheduler_path=scheduler_path,
-                project_root=project_root,
+                prompt_rel_path=prompt_rel_shell,
+                project_root_rel_path=project_root_rel_shell,
             ),
             encoding="utf-8",
         )
         bat_path.write_text(
             build_bat_launcher(
                 agent=agent,
-                prompt_path=prompt_path,
-                scheduler_path=scheduler_path,
-                project_root=project_root,
+                prompt_rel_path=prompt_rel_bat,
+                project_root_rel_path=project_root_rel_bat,
             ),
             encoding="utf-8",
         )
@@ -320,18 +290,22 @@ def write_launchers(
 def build_shell_launcher(
     *,
     agent: str,
-    prompt_path: Path,
-    scheduler_path: Path,
-    project_root: Path,
+    prompt_rel_path: str,
+    project_root_rel_path: str,
 ) -> str:
     return "\n".join(
         [
             "#!/usr/bin/env bash",
             "set -euo pipefail",
             "",
-            f'export AGENT_BOOTSTRAP_ROOT="{project_root}"',
-            f'export AGENT_SCHEDULER_PATH="{scheduler_path}"',
-            f'PROMPT_FILE="{prompt_path}"',
+            'SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+            'if [[ -z "${AGENT_BOOTSTRAP_ROOT:-}" ]]; then',
+            f'  export AGENT_BOOTSTRAP_ROOT="$(cd -- "${{SCRIPT_DIR}}/{project_root_rel_path}" && pwd)"',
+            "fi",
+            'if [[ -z "${AGENT_SCHEDULER_PATH:-}" ]]; then',
+            '  export AGENT_SCHEDULER_PATH="${AGENT_BOOTSTRAP_ROOT}/skill_scheduler.py"',
+            "fi",
+            f'PROMPT_FILE="${{SCRIPT_DIR}}/{prompt_rel_path}"',
             "",
             f'echo "[{agent}] runtime env ready"',
             'echo "AGENT_BOOTSTRAP_ROOT=${AGENT_BOOTSTRAP_ROOT}"',
@@ -352,17 +326,21 @@ def build_shell_launcher(
 def build_bat_launcher(
     *,
     agent: str,
-    prompt_path: Path,
-    scheduler_path: Path,
-    project_root: Path,
+    prompt_rel_path: str,
+    project_root_rel_path: str,
 ) -> str:
     return "\n".join(
         [
             "@echo off",
             "setlocal EnableExtensions",
-            f'set "AGENT_BOOTSTRAP_ROOT={project_root}"',
-            f'set "AGENT_SCHEDULER_PATH={scheduler_path}"',
-            f'set "PROMPT_FILE={prompt_path}"',
+            'for %%I in ("%~dp0.") do set "SCRIPT_DIR=%%~fI"',
+            "if not defined AGENT_BOOTSTRAP_ROOT (",
+            f'  for %%I in ("%SCRIPT_DIR%\\{project_root_rel_path}") do set "AGENT_BOOTSTRAP_ROOT=%%~fI"',
+            ")",
+            "if not defined AGENT_SCHEDULER_PATH (",
+            '  set "AGENT_SCHEDULER_PATH=%AGENT_BOOTSTRAP_ROOT%\\skill_scheduler.py"',
+            ")",
+            f'set "PROMPT_FILE=%SCRIPT_DIR%\\{prompt_rel_path}"',
             "",
             f'echo [{agent}] runtime env ready',
             "echo AGENT_BOOTSTRAP_ROOT=%AGENT_BOOTSTRAP_ROOT%",
@@ -382,4 +360,3 @@ def build_bat_launcher(
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

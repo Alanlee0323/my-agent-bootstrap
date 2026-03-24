@@ -7,8 +7,8 @@ bundle_description={bundle_description}
 
 ## Runtime Contract
 
-- Project root: `{bootstrap_root}`
-- Scheduler path: `{scheduler_path}`
+- Project root token: `{bootstrap_root}`
+- Scheduler file: `{scheduler_path}`
 - Preferred language: `{output_language}`
 - Max skill reads: `{max_skill_reads}`
 
@@ -18,8 +18,9 @@ Scheduler command template:
 `{scheduler_command}`
 
 Path contract:
-- Resolve scheduler from `AGENT_SCHEDULER_PATH` or absolute path above.
-- Avoid relative-path execution for `skill_scheduler.py`.
+- Resolve project root from `AGENT_BOOTSTRAP_ROOT`; if unset, derive it from the current repo before running commands.
+- Resolve scheduler from `AGENT_SCHEDULER_PATH`; if unset, use `{bootstrap_root}/{scheduler_path}`.
+- Avoid persisting machine-specific absolute paths in generated prompts.
 
 ## Intent Whitelist
 
@@ -41,4 +42,3 @@ After scheduler command:
 ## Available Skills
 
 {skills_bullets}
-

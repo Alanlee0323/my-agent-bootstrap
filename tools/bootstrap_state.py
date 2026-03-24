@@ -8,6 +8,13 @@ from pathlib import Path
 import sys
 
 
+SCRIPT_PATH = Path(__file__).resolve()
+REPO_ROOT = SCRIPT_PATH.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from bootstrap_fingerprint import compute_input_fingerprint
+
 ADAPTERS = ("codex", "copilot", "gemini")
 ADAPTER_FILES = (
     "AGENTS.generated.md",
@@ -109,6 +116,14 @@ def command_reconcile(args: argparse.Namespace) -> int:
     state_path = Path(args.state).resolve()
     output_root = Path(args.output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
+    project_root_path = Path(args.project_root).resolve() if args.project_root.strip() else None
+    skills_repo_path = _resolve_skills_repo_path(project_root_path, args.skills_path)
+    profile_path = _resolve_profile_path(project_root_path, args.profile_path)
+    input_fingerprint = _compute_manifest_fingerprint(
+        project_root=project_root_path,
+        skills_repo=skills_repo_path,
+        profile_path=profile_path,
+    )
 
     previous_payload: dict[str, object] = {}
     previous_generated: set[str] = set()
@@ -137,15 +152,19 @@ def command_reconcile(args: argparse.Namespace) -> int:
             "max_skill_reads": args.max_skill_reads,
             "generated_at": _now_iso(),
             "generated_files": [],
+            "input_fingerprint": input_fingerprint,
         }
         bundle_manifest.write_text(
             json.dumps(bundle_payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
-    current_generated = _collect_generated_files(output_root)
-
     if args.mode == "bundle":
+        current_generated = _collect_bundle_generated_files(
+            output_root,
+            bundle_name=args.bundle_name.strip(),
+            agent_target=args.agent_target.strip(),
+        )
         bundle_payload = {
             "mode": "bundle",
             "bundle": args.bundle_name.strip(),
@@ -155,12 +174,19 @@ def command_reconcile(args: argparse.Namespace) -> int:
             "max_skill_reads": args.max_skill_reads,
             "generated_at": _now_iso(),
             "generated_files": sorted(current_generated),
+            "input_fingerprint": input_fingerprint,
         }
         bundle_manifest.write_text(
             json.dumps(bundle_payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        current_generated = _collect_generated_files(output_root)
+        current_generated = _collect_bundle_generated_files(
+            output_root,
+            bundle_name=args.bundle_name.strip(),
+            agent_target=args.agent_target.strip(),
+        )
+    else:
+        current_generated = _collect_profile_generated_files(output_root)
 
     stale_removed: list[str] = []
     if args.clean_stale and previous_generated:
@@ -198,6 +224,7 @@ def command_reconcile(args: argparse.Namespace) -> int:
             else previous_payload.get("max_skill_reads", None)
         ),
         "generated_files": sorted(current_generated),
+        "input_fingerprint": input_fingerprint,
     }
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(
@@ -278,6 +305,65 @@ def _collect_generated_files(output_root: Path) -> set[str]:
     return result
 
 
+def _collect_bundle_generated_files(
+    output_root: Path,
+    *,
+    bundle_name: str,
+    agent_target: str,
+) -> set[str]:
+    normalized_bundle = bundle_name.strip()
+    if not normalized_bundle:
+        return _collect_generated_files(output_root)
+
+    normalized_agent = agent_target.strip().lower()
+    if normalized_agent == "all":
+        selected_adapters = ADAPTERS
+    elif normalized_agent in ADAPTERS:
+        selected_adapters = (normalized_agent,)
+    else:
+        selected_adapters = ADAPTERS
+
+    result: set[str] = set()
+    for adapter in selected_adapters:
+        bundle_dir = output_root / adapter / normalized_bundle
+        if not bundle_dir.exists() or not bundle_dir.is_dir():
+            continue
+        for filename in ADAPTER_FILES:
+            candidate = bundle_dir / filename
+            if candidate.exists() and candidate.is_file():
+                result.add(candidate.relative_to(output_root).as_posix())
+
+    bundle_manifest = output_root / "bundle.manifest.json"
+    if bundle_manifest.exists() and bundle_manifest.is_file():
+        result.add(bundle_manifest.relative_to(output_root).as_posix())
+    return result
+
+
+def _collect_profile_generated_files(output_root: Path) -> set[str]:
+    manifest_path = output_root / "profile.manifest.json"
+    if not manifest_path.exists() or not manifest_path.is_file():
+        return _collect_generated_files(output_root)
+
+    try:
+        payload = _load_state(manifest_path)
+    except Exception:  # noqa: BLE001
+        return _collect_generated_files(output_root)
+
+    managed_files = payload.get("managed_files", [])
+    result: set[str] = set()
+    if isinstance(managed_files, list):
+        for item in managed_files:
+            if not isinstance(item, str):
+                continue
+            normalized = item.replace("\\", "/").strip("/")
+            if normalized:
+                result.add(normalized)
+    if result:
+        result.add("profile.manifest.json")
+        return result
+    return _collect_generated_files(output_root)
+
+
 def _is_managed_relative_path(rel_path: str) -> bool:
     normalized = rel_path.replace("\\", "/").strip("/")
     if not normalized:
@@ -320,6 +406,45 @@ def _remove_empty_parents(path: Path, *, stop_dir: Path) -> None:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_skills_repo_path(project_root: Path | None, raw_skills_path: str) -> Path | None:
+    text = raw_skills_path.strip()
+    if not text:
+        return None
+    candidate = Path(text)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if project_root is None:
+        return None
+    return (project_root / candidate).resolve()
+
+
+def _resolve_profile_path(project_root: Path | None, raw_profile_path: str) -> Path | None:
+    text = raw_profile_path.strip()
+    if not text:
+        return None
+    candidate = Path(text)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if project_root is None:
+        return None
+    return (project_root / candidate).resolve()
+
+
+def _compute_manifest_fingerprint(
+    *,
+    project_root: Path | None,
+    skills_repo: Path | None,
+    profile_path: Path | None,
+) -> dict[str, object] | None:
+    if project_root is None:
+        return None
+    return compute_input_fingerprint(
+        project_root=project_root,
+        skills_repo=skills_repo,
+        profile_path=profile_path,
+    )
 
 
 if __name__ == "__main__":

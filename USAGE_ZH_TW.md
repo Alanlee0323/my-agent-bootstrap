@@ -179,6 +179,190 @@ tools/bootstrap_agent.sh --target /path/to/project --upgrade --bundle engineer -
   bootstrap.state.json
 ```
 
+## 7.1 多台電腦開發時，哪些該進版控
+
+若你確定同一個專案會同時使用 `Codex + GitHub Copilot CLI + Gemini CLI`，建議用一份共用 profile，一次生成三套 prompt 與 launcher。
+
+範例 `agent.profile.yaml`：
+
+```yaml
+name: engineer-tri-cli
+bundle: engineer
+agents:
+  - codex
+  - copilot
+  - gemini
+skills_repo: my-agent-skills
+adapter_output: .agent
+max_skill_reads: 3
+generate_launchers: true
+```
+
+這樣做的好處：
+
+1. 三個 CLI 共用同一份 bundle / whitelist / scheduler contract
+2. 只要一個 bootstrap 指令就能一起更新三套產物
+3. launcher 會在執行時解析 repo root 與 scheduler，不再把本機絕對路徑寫死
+
+## 7.2 版本控制邊界（最佳實踐）
+
+建議進版控，當作 source of truth：
+
+1. `agent.profile.yaml` 或你選用的 profile / bundle 設定檔
+2. `my-agent-skills/`：建議用 submodule，或直接 vendor 進 repo
+3. `skills/`：只放這個專案特有的 local override
+
+建議在本機重建，不要直接進版控：
+
+1. `.agent/` 內的 prompt、IR、manifest、launchers
+2. `bootstrap.state.json`
+3. `.gitnexus/`
+4. `.git/info/exclude` 內的本機忽略設定
+
+Bootstrap runtime 有兩種策略，請選一種並保持一致：
+
+1. 每台電腦重新 bootstrap（建議）：不提交 `AGENTS.md`、`GEMINI.md`、`skill_scheduler.py`、`services/skill_scheduler.py`、`tests/test_skill_scheduler.py`
+2. repo 直接管理 bootstrap runtime：提交上述檔案，但每次 bootstrap 更新都要當作正式 source diff 審查
+
+## 7.3 建議 `.gitignore`
+
+若你採用「每台電腦重新 bootstrap」的最佳實踐，建議在目標專案 `.gitignore` 加上：
+
+```gitignore
+# Agent bootstrap generated outputs
+.agent/
+.gitnexus/
+
+# Local bootstrap state
+bootstrap.state.json
+
+# Per-machine bootstrap runtime files
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+skill_scheduler.py
+services/skill_scheduler.py
+tests/test_skill_scheduler.py
+```
+
+補充：
+
+1. 若 `my-agent-skills/` 是 submodule，不要 ignore 它
+2. 若 `skills/` 放的是專案特化 override，也不要 ignore
+3. 若你採 repo-managed bootstrap，請把上述 runtime file 從 `.gitignore` 拿掉並正式提交
+
+## 7.4 多機協作 SOP
+
+### 新電腦第一次初始化
+
+1. clone 專案
+2. 若 `my-agent-skills/` 是 submodule，先執行：
+
+```bash
+git submodule update --init --recursive
+```
+
+3. 用共用 profile bootstrap：
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --profile agent.profile.yaml --force
+```
+
+4. 驗證 scheduler：
+
+```bash
+python skill_scheduler.py --status --format text
+python skill_scheduler.py --task "health check" --top 1 --format text
+```
+
+### 日常更新
+
+當專案 local override、bundle/profile、或 `agent-bootstrap` 版本有變動時：
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade
+```
+
+這會從 `bootstrap.state.json` 還原前一次模式，刷新受管檔案，並清理過期 `.agent` 產物。
+
+### 先更新共用 skills 再重建
+
+若你想先同步最新 `my-agent-skills` remote，再一起更新：
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade --update-skills-remote
+```
+
+### 建立專案 local skill
+
+當某個技能只屬於當前專案，不想直接改共用 `my-agent-skills` 時，可用：
+
+```bash
+python tools/bootstrap_add_local_skill.py \
+  --project-root /path/to/project \
+  --skill "Local Station Debug" \
+  --description "project-only station debugging workflow" \
+  --domain engineer \
+  --bundle engineer
+```
+
+這會：
+
+1. 建立 `skills/engineer/local-station-debug/SKILL.md`
+2. 使用 `templates/skill/SKILL.md.tmpl` 的標準模板
+3. 把 skill id 補進 `bundles.local/engineer.yaml`
+4. 更新 source-of-truth，但 `.agent` 產物仍需重新整理
+
+若你想替不同專案指定預設 bundle/domain 或自訂模板，可在專案根目錄放 `.agent-bootstrap.yaml`：
+
+```yaml
+local_skill_template: custom-skill-template.md.tmpl
+default_domain: engineer
+default_bundle: engineer
+```
+
+新增或修改任何 project-local skill 之後，請重新產生產物：
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade
+```
+
+若你忘了 refresh，`skill_scheduler.py` 會主動提醒目前產物已 stale，並告訴你恢復指令。
+
+### 三個 Agent 一起用時的建議
+
+生成位置：
+
+1. Codex: `.agent/codex/<bundle>/AGENTS.generated.md`
+2. Copilot CLI: `.agent/copilot/<bundle>/copilot.prompt.md`
+3. Gemini CLI: `.agent/gemini/<bundle>/gemini.prompt.md`
+
+launcher：
+
+1. `.agent/launchers/launch_codex.sh` / `.bat`
+2. `.agent/launchers/launch_copilot.sh` / `.bat`
+3. `.agent/launchers/launch_gemini.sh` / `.bat`
+
+建議分工：
+
+1. Codex：實作、重構、精準改碼
+2. Copilot CLI：快速修補、小步迭代、測試循環
+3. Gemini CLI：大範圍探索、綜整、review
+
+使用方式：
+
+```bash
+./.agent/launchers/launch_codex.sh <your-codex-cli-command>
+./.agent/launchers/launch_copilot.sh <your-copilot-cli-command>
+./.agent/launchers/launch_gemini.sh <your-gemini-cli-command>
+```
+
+launcher 會自動提供：
+
+1. `AGENT_BOOTSTRAP_ROOT`
+2. `AGENT_SCHEDULER_PATH`
+3. `PROMPT_FILE`
+
 ## 8. Scheduler 驗證範例
 
 狀態檢查：
@@ -186,6 +370,23 @@ tools/bootstrap_agent.sh --target /path/to/project --upgrade --bundle engineer -
 ```bash
 python skill_scheduler.py --status --format text
 ```
+
+合併結果 / Policy 來源追蹤：
+
+```bash
+python tools/bootstrap_status.py \
+  --profile ./agent.profile.yaml \
+  --project-root . \
+  --default-skills-repo ./my-agent-skills \
+  --format json \
+  --explain
+```
+
+這個指令可用來確認：
+
+1. base bundle + `bundles.local/` 合併後實際生效哪些 skill
+2. 某個 skill definition 來自 shared `my-agent-skills` 還是 local `skills/`
+3. `max_skill_reads` 這類 policy 最後是哪一層覆寫勝出
 
 任務路由：
 
@@ -203,11 +404,17 @@ python skill_scheduler.py \
   --format json
 ```
 
+stale 產物檢查：
+
+1. `skill_scheduler.py --status --format text` 會在 source 改過但尚未 refresh 時顯示警告
+2. `skill_scheduler.py --status --format json` 會包含 `artifact_freshness.is_stale`
+3. 恢復指令是 `tools/bootstrap_agent.sh --target /path/to/project --upgrade`
+
 ## 9. 新增 skill 要放哪裡、怎麼做
 
 ```mermaid
 flowchart TD
-    A[新增 global skill<br/>my-agent-skills/<skill>/SKILL.md] --> B[更新 bundles/*.yaml]
+    A[新增 global skill<br/>my-agent-skills/skills/<domain>/<skill>/SKILL.md] --> B[更新 bundles/*.yaml]
     B --> C[需要固定組合就更新 profiles/*.yaml]
     C --> D[重新執行 bootstrap<br/>--profile 或 --bundle]
     D --> E[跑 scheduler 驗證]
@@ -216,7 +423,7 @@ flowchart TD
 
 實際步驟：
 
-1. 新增檔案：`my-agent-skills/<new-skill>/SKILL.md`
+1. 新增檔案：`my-agent-skills/skills/<domain>/<new-skill>/SKILL.md`
 2. frontmatter `name` 要穩定、唯一（建議小寫-hyphen）
 3. 在 `## When to use this skill` 寫明確觸發條件
 4. 把 skill id 加進 `my-agent-skills/bundles/*.yaml`
@@ -230,13 +437,14 @@ flowchart TD
 請在目標專案放 local override：
 
 ```text
-skills/<skill>/SKILL.md
+skills/<domain>/<skill>/SKILL.md
 ```
 
 規則：
 
 1. local `name` 必須和 global skill identifier 完全相同
 2. local 只寫專案差異，不要複製整份 global
+3. 修改後請重新執行 `tools/bootstrap_agent.sh --target /path/to/project --upgrade`
 
 ## 11. 常見錯誤
 
@@ -254,3 +462,6 @@ bundle 裡面引用的 skill id，找不到對應 `SKILL.md` 的 `name`。
 
 5. `--upgrade requested but no previous bootstrap state found`  
 先補一次明確參數（`--profile` 或 `--bundle`）執行，產生 state 後再用 `--upgrade`。
+
+6. `Generated agent artifacts are stale`  
+你在上次 refresh 之後改了 `skills/`、`bundles.local/`、`agent.profile.yaml`，或更新了 `my-agent-skills`。執行 `tools/bootstrap_agent.sh --target /path/to/project --upgrade`。

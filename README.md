@@ -187,6 +187,195 @@ flowchart TD
   bootstrap.state.json
 ```
 
+## Recommended Team Setup For Codex + Copilot CLI + Gemini CLI
+
+If you know you will use all 3 agents in the same project, use one shared profile and generate all prompts together.
+
+Example `agent.profile.yaml`:
+
+```yaml
+name: engineer-tri-cli
+bundle: engineer
+agents:
+  - codex
+  - copilot
+  - gemini
+skills_repo: my-agent-skills
+adapter_output: .agent
+max_skill_reads: 3
+generate_launchers: true
+```
+
+What this gives you:
+
+1. One shared bundle/skill contract across all 3 CLIs.
+2. One bootstrap command to regenerate Codex/Copilot/Gemini outputs together.
+3. Portable launchers that resolve project root and scheduler at runtime instead of hardcoding machine-specific absolute paths.
+
+## Version Control Boundary
+
+Commit these as source of truth:
+
+1. `agent.profile.yaml` or your chosen bundle/profile config.
+2. `my-agent-skills/` as a git submodule or vendored directory.
+3. `skills/` for project-local overrides only.
+
+Recommended to regenerate locally instead of committing:
+
+1. `.agent/` artifacts, launchers, and manifests.
+2. `bootstrap.state.json`.
+3. `.gitnexus/`.
+4. `.git/info/exclude`.
+
+Choose one bootstrap-runtime policy and keep it consistent:
+
+1. Per-machine bootstrap (recommended): do not commit `AGENTS.md`, `GEMINI.md`, `skill_scheduler.py`, `services/skill_scheduler.py`, `tests/test_skill_scheduler.py`; regenerate them on each machine.
+2. Repo-managed bootstrap: commit those files if you want zero-init clones, but then treat bootstrap refreshes like normal source changes and review diffs in git.
+
+## Recommended `.gitignore` For Target Projects
+
+If you follow the recommended per-machine bootstrap workflow, add this to the target project's `.gitignore`:
+
+```gitignore
+# Agent bootstrap generated outputs
+.agent/
+.gitnexus/
+
+# Local bootstrap state
+bootstrap.state.json
+
+# Per-machine bootstrap runtime files
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+skill_scheduler.py
+services/skill_scheduler.py
+tests/test_skill_scheduler.py
+```
+
+Notes:
+
+1. Do not ignore `my-agent-skills/` if you use it as a committed submodule.
+2. Do not ignore `skills/` if you store project-local overrides there.
+3. If you choose repo-managed bootstrap instead, remove the runtime-file entries from `.gitignore` and commit those files intentionally.
+
+## SOP
+
+### 1. First-Time Setup On A New Machine
+
+1. Clone the target project.
+2. If `my-agent-skills/` is a submodule, run:
+
+```bash
+git submodule update --init --recursive
+```
+
+3. Bootstrap with your shared profile:
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --profile agent.profile.yaml --force
+```
+
+4. Verify scheduler wiring:
+
+```bash
+python skill_scheduler.py --status --format text
+python skill_scheduler.py --task "health check" --top 1 --format text
+```
+
+### 2. Daily Regeneration After Project / Skill Changes
+
+Use this after changing project-local overrides, bundle specs, profile settings, or updating `agent-bootstrap`:
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade
+```
+
+This restores the previous mode from `bootstrap.state.json`, refreshes managed files, and cleans stale `.agent` outputs.
+
+### 3. Update Shared `my-agent-skills` Before Regeneration
+
+Use this when the remote skills package moved forward and you want the latest shared rules first:
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade --update-skills-remote
+```
+
+If you commit the submodule pointer, review and commit that pointer change like any other dependency update.
+
+### 4. Create A Project-Local Skill
+
+Use this when a single project needs a skill that should not be added to shared `my-agent-skills`.
+
+```bash
+python tools/bootstrap_add_local_skill.py \
+  --project-root /path/to/project \
+  --skill "Local Station Debug" \
+  --description "project-only station debugging workflow" \
+  --domain engineer \
+  --bundle engineer
+```
+
+This will:
+
+1. Create `skills/engineer/local-station-debug/SKILL.md`
+2. Use the canonical template from `templates/skill/SKILL.md.tmpl`
+3. Add that skill id into `bundles.local/engineer.yaml`
+4. Leave source-of-truth updated, but generated `.agent` artifacts still need refresh
+
+Optional project-level defaults live in `.agent-bootstrap.yaml`:
+
+```yaml
+local_skill_template: custom-skill-template.md.tmpl
+default_domain: engineer
+default_bundle: engineer
+```
+
+After adding or editing any project-local skill, regenerate artifacts:
+
+```bash
+tools/bootstrap_agent.sh --target /path/to/project --upgrade
+```
+
+If you forget to refresh, `skill_scheduler.py` will report that generated agent artifacts are stale and suggest the recovery command.
+
+### 5. How To Use Codex / Copilot CLI / Gemini CLI Together
+
+Generated prompt locations:
+
+1. Codex: `.agent/codex/<bundle>/AGENTS.generated.md`
+2. Copilot CLI: `.agent/copilot/<bundle>/copilot.prompt.md`
+3. Gemini CLI: `.agent/gemini/<bundle>/gemini.prompt.md`
+
+Generated launchers:
+
+1. `.agent/launchers/launch_codex.sh` / `.bat`
+2. `.agent/launchers/launch_copilot.sh` / `.bat`
+3. `.agent/launchers/launch_gemini.sh` / `.bat`
+
+Recommended collaboration pattern:
+
+1. Use Codex for implementation/refactor tasks.
+2. Use Copilot CLI for quick edit/test loops and secondary implementation passes.
+3. Use Gemini CLI for broad exploration, synthesis, and review.
+4. Keep all 3 on the same profile so scheduler routing, intent whitelist, and retry rules stay consistent.
+
+Launcher usage pattern:
+
+```bash
+./.agent/launchers/launch_codex.sh <your-codex-cli-command>
+./.agent/launchers/launch_copilot.sh <your-copilot-cli-command>
+./.agent/launchers/launch_gemini.sh <your-gemini-cli-command>
+```
+
+The launcher exports:
+
+1. `AGENT_BOOTSTRAP_ROOT`
+2. `AGENT_SCHEDULER_PATH`
+3. `PROMPT_FILE`
+
+So each CLI session can reuse the same repo-local scheduler and the correct generated prompt file without hardcoded absolute paths.
+
 ## Verify It Works
 
 Status check:
@@ -194,6 +383,23 @@ Status check:
 ```bash
 python skill_scheduler.py --status --format text
 ```
+
+Merged bundle / policy explain check:
+
+```bash
+python tools/bootstrap_status.py \
+  --profile ./agent.profile.yaml \
+  --project-root . \
+  --default-skills-repo ./my-agent-skills \
+  --format json \
+  --explain
+```
+
+Use this when you need to confirm:
+
+1. Which final skill list is active after base bundle + `bundles.local/`
+2. Whether a skill definition came from shared `my-agent-skills` or local `skills/`
+3. Which layer won for values like `max_skill_reads`
 
 Task check:
 
@@ -210,6 +416,12 @@ python skill_scheduler.py \
   --intent-whitelist "planning-implementation,handling-review" \
   --format json
 ```
+
+Stale artifact check:
+
+1. `skill_scheduler.py --status --format text` will warn when source inputs changed after the last refresh
+2. `skill_scheduler.py --status --format json` includes `artifact_freshness.is_stale`
+3. Recovery command is `tools/bootstrap_agent.sh --target /path/to/project --upgrade`
 
 ## How To Add A New Skill (Practical Workflow)
 
@@ -233,9 +445,10 @@ Step-by-step:
 
 If you need project-specific behavior:
 
-1. Create local override in target project: `skills/<skill>/SKILL.md`.
+1. Create local override in target project: `skills/<domain>/<skill>/SKILL.md`.
 2. Keep the same frontmatter `name` as global skill.
 3. Put only project-specific differences.
+4. Re-run `tools/bootstrap_agent.sh --target /path/to/project --upgrade`.
 
 ## Troubleshooting
 
@@ -256,6 +469,9 @@ Check profile path, YAML format, and `skills_repo` path.
 
 6. `--upgrade requested but no previous bootstrap state found`  
 Provide `--profile` or `--bundle` explicitly once, then rerun `--upgrade`.
+
+7. `Generated agent artifacts are stale`  
+You changed `skills/`, `bundles.local/`, `agent.profile.yaml`, or updated `my-agent-skills` after the last refresh. Run `tools/bootstrap_agent.sh --target /path/to/project --upgrade`.
 
 ## Traditional Chinese Guide
 

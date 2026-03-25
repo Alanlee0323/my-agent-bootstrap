@@ -182,6 +182,7 @@ AGENTS.md
 GEMINI.md
 CLAUDE.md
 skill_scheduler.py
+bootstrap_fingerprint.py
 services/skill_scheduler.py
 tests/test_skill_scheduler.py
 my-agent-skills/
@@ -564,6 +565,7 @@ setup_submodule
 copy_template_file "AGENTS.md"
 copy_template_file "GEMINI.md"
 copy_template_file "skill_scheduler.py"
+copy_template_file "bootstrap_fingerprint.py"
 copy_template_file "services/skill_scheduler.py"
 copy_template_file "tests/test_skill_scheduler.py"
 if [[ -n "${PROFILE_PATH}" ]]; then

@@ -229,7 +229,7 @@ Recommended to regenerate locally instead of committing:
 
 Choose one bootstrap-runtime policy and keep it consistent:
 
-1. Per-machine bootstrap (recommended): do not commit `AGENTS.md`, `GEMINI.md`, `skill_scheduler.py`, `services/skill_scheduler.py`, `tests/test_skill_scheduler.py`; regenerate them on each machine.
+1. Per-machine bootstrap (recommended): do not commit `AGENTS.md`, `GEMINI.md`, `skill_scheduler.py`, `bootstrap_fingerprint.py`, `services/skill_scheduler.py`, `tests/test_skill_scheduler.py`; regenerate them on each machine.
 2. Repo-managed bootstrap: commit those files if you want zero-init clones, but then treat bootstrap refreshes like normal source changes and review diffs in git.
 
 ## Recommended `.gitignore` For Target Projects
@@ -249,6 +249,7 @@ AGENTS.md
 GEMINI.md
 CLAUDE.md
 skill_scheduler.py
+bootstrap_fingerprint.py
 services/skill_scheduler.py
 tests/test_skill_scheduler.py
 ```

@@ -221,7 +221,7 @@ generate_launchers: true
 
 Bootstrap runtime 有兩種策略，請選一種並保持一致：
 
-1. 每台電腦重新 bootstrap（建議）：不提交 `AGENTS.md`、`GEMINI.md`、`skill_scheduler.py`、`services/skill_scheduler.py`、`tests/test_skill_scheduler.py`
+1. 每台電腦重新 bootstrap（建議）：不提交 `AGENTS.md`、`GEMINI.md`、`skill_scheduler.py`、`bootstrap_fingerprint.py`、`services/skill_scheduler.py`、`tests/test_skill_scheduler.py`
 2. repo 直接管理 bootstrap runtime：提交上述檔案，但每次 bootstrap 更新都要當作正式 source diff 審查
 
 ## 7.3 建議 `.gitignore`
@@ -241,6 +241,7 @@ AGENTS.md
 GEMINI.md
 CLAUDE.md
 skill_scheduler.py
+bootstrap_fingerprint.py
 services/skill_scheduler.py
 tests/test_skill_scheduler.py
 ```

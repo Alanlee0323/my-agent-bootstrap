@@ -169,6 +169,8 @@ set "RELATIVE_PATH=AGENTS.md"
 call :copy_template_file
 set "RELATIVE_PATH=skill_scheduler.py"
 call :copy_template_file
+set "RELATIVE_PATH=bootstrap_fingerprint.py"
+call :copy_template_file
 set "RELATIVE_PATH=services\skill_scheduler.py"
 call :copy_template_file
 set "RELATIVE_PATH=tests\test_skill_scheduler.py"
@@ -397,6 +399,7 @@ if "%DRY_RUN%"=="1" (
   echo AGENTS.md
   echo CLAUDE.md
   echo skill_scheduler.py
+  echo bootstrap_fingerprint.py
   echo services/skill_scheduler.py
   echo tests/test_skill_scheduler.py
   echo my-agent-skills/

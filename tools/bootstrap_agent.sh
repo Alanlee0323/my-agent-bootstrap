@@ -130,7 +130,17 @@ setup_submodule() {
     log "my-agent-skills path exists. Running submodule update."
   else
     log "Adding my-agent-skills submodule: ${SKILLS_URL} -> ${SKILLS_PATH}"
-    run git -C "${TARGET_DIR}" submodule add "${SKILLS_URL}" "${SKILLS_PATH}" || true
+    # Detect and clean orphaned .git/modules/<path> left by a previous failed bootstrap.
+    # Without this, `git submodule add` refuses to run and the submodule is never created.
+    local modules_dir="${TARGET_DIR}/.git/modules/${SKILLS_PATH}"
+    if [[ -d "${modules_dir}" ]]; then
+      warn "Orphaned .git/modules/${SKILLS_PATH} detected. Removing before submodule add."
+      run rm -rf "${modules_dir}"
+      run git -C "${TARGET_DIR}" config --remove-section "submodule.${SKILLS_PATH}" 2>/dev/null || true
+    fi
+    # Use --force so git doesn't refuse when the path is already in .gitignore / .git/info/exclude
+    # (e.g. written there by a previous bootstrap run).
+    run git -C "${TARGET_DIR}" submodule add --force "${SKILLS_URL}" "${SKILLS_PATH}" || true
   fi
 
   run git -C "${TARGET_DIR}" submodule update --init --recursive "${SKILLS_PATH}" || \
